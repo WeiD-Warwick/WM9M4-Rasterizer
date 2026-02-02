@@ -34,29 +34,15 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 #endif
 
 #if OPT_VERTEX_CACHE
+    const float w = renderer.canvas.getWidth();
+    const float h = renderer.canvas.getHeight();
+
+#if OPT_AVX_SIMD
+	VertexSOA cache;
+	mesh->preProcessVertexCache(p, w, h, cache);
+#else
     std::vector<Vertex> vcache;
-    vcache.resize(mesh->vertices.size());
-
-    const float w = static_cast<float>(renderer.canvas.getWidth());
-    const float h = static_cast<float>(renderer.canvas.getHeight());
-    const float halfW = 0.5f * w;
-    const float halfH = 0.5f * h;
-
-    for (unsigned int i = 0; i < mesh->vertices.size(); ++i) {
-        Vertex out;
-        out.p = p * mesh->vertices[i].p;
-        out.p.divideW();
-        out.normal = mesh->world * mesh->vertices[i].normal;
-        out.normal.normalise();
-
-        // Map NDC -> screen
-        out.p[0] = (out.p[0] + 1.f) * halfW;
-        out.p[1] = h - (out.p[1] + 1.f) * halfH;
-
-        out.rgb = mesh->vertices[i].rgb;
-        vcache[i] = out;
-    }
-
+    mesh->preProcessVertexCache(p, w, h, vcache);
     // Iterate through all triangles in the mesh using cached vertices
     for (triIndices& ind : mesh->triangles) {
         Vertex t[3];
@@ -70,6 +56,8 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
         triangle tri(t[0], t[1], t[2]);
         tri.draw(renderer, L, mesh->ka, mesh->kd);
     }
+#endif
+
 #else
     // Iterate through all triangles in the mesh
     for (triIndices& ind : mesh->triangles) {
@@ -317,8 +305,8 @@ void scene2() {
 // No input variables
 int main() {
     // Uncomment the desired scene function to run
-    //scene1();
-    scene2();
+    scene1();
+    //scene2();
     //sceneTest(); 
     
 

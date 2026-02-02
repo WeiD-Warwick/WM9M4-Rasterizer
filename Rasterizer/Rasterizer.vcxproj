@@ -136,6 +136,7 @@
   <ItemGroup>
     <ClInclude Include="AVX_SOA.h" />
     <ClInclude Include="colour.h" />
+    <ClInclude Include="EdgeFunction.h" />
     <ClInclude Include="Macros.h" />
     <ClInclude Include="GamesEngineeringBase.h" />
     <ClInclude Include="light.h" />

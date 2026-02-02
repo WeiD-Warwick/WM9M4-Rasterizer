@@ -54,6 +54,7 @@
     <ClInclude Include="Macros.h" />
     <ClInclude Include="Profiler.h" />
     <ClInclude Include="AVX_SOA.h" />
+    <ClInclude Include="EdgeFunction.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="raster.cpp" />

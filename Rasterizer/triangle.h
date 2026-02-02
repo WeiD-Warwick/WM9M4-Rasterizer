@@ -10,6 +10,10 @@
 
 #include "Macros.h"
 
+#if OPT_EDGE_FUNCTION
+#include "EdgeFunction.h"
+#endif
+
 // Simple support class for a 2D vector
 class vec2D {
 public:
@@ -96,13 +100,13 @@ public:
     // Returns true if the point is inside the triangle, false otherwise
     bool getCoordinates(vec2D p, float& alpha, float& beta, float& gamma) {
 #if OPT_INV_AREA
-        alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) * invArea;
-        beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) * invArea;
-        gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) * invArea;
+        alpha = getC(vec2D(v[1].p), vec2D(v[2].p), p) * invArea;
+        beta = getC(vec2D(v[2].p), vec2D(v[0].p), p) * invArea;
+        gamma = getC(vec2D(v[0].p), vec2D(v[1].p), p) * invArea;
 #else
-        alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) / area;
-        beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) / area;
-        gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) / area;
+		alpha = getC(vec2D(v[1].p), vec2D(v[2].p), p) / area;
+        beta = getC(vec2D(v[2].p), vec2D(v[0].p), p) / area;
+		gamma = getC(vec2D(v[0].p), vec2D(v[1].p), p) / area;
 #endif
 
         if (alpha < 0.f || beta < 0.f || gamma < 0.f) return false;
@@ -136,28 +140,58 @@ public:
 #if OPT_BACKFACE_CULLING
         if (signedArea <= 0.f) return;
 #endif
+
+
+#if OPT_EDGE_FUNCTION
+        const int minY = (int)(minV.y);
+		const int maxY = (int)ceil(maxV.y);
+		const int minX = (int)(minV.x);
+		const int maxX = (int)ceil(maxV.x);
+
+        TriangleEdgeFunctions edges(v[0].p, v[1].p, v[2].p);
+        edges.beginRow(minX, minY);
+
+        for (int y = minY; y < maxY; y++) {
+            float e0, e1, e2;
+            edges.getRowStart(e0, e1, e2);
+
+            for (int x = minX; x < maxX; x++) {
+				// weights
+                float alpha, beta, gamma;
+                if (e0 >= 0.f && e1 >= 0.f && e2 >= 0.f) {
+#if OPT_INV_AREA
+                    alpha = e0 * invArea;
+                    beta = e1 * invArea;
+                    gamma = e2 * invArea;
+#else
+                    alpha = e0 / area;
+                    beta = e1 / area;
+                    gamma = e2 / area;
+#endif
+
+#else
         // Iterate over the bounding box and check each pixel
         for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
             for (int x = (int)(minV.x); x < (int)ceil(maxV.x); x++) {
                 float alpha, beta, gamma;
-
                 // Check if the pixel lies inside the triangle
                 if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma)) {
+#endif
 
 #if OPT_EARLY_Z_TEST
-                    float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
                     if (renderer.zbuffer(x, y) <= depth || depth <= 0.001f) continue;
 
                     // Interpolate color, depth, and normals
-                    colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
+                    colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
                     c.clampColour();
 #else
                     // Interpolate color, depth, and normals
-                    colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
+                    colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
                     c.clampColour();
-                    float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
 #endif
-                    vec4 normal = interpolate(beta, gamma, alpha, v[0].normal, v[1].normal, v[2].normal);
+                    vec4 normal = interpolate(alpha, beta, gamma, v[0].normal, v[1].normal, v[2].normal);
                     normal.normalise();
 
                     // Perform Z-buffer test and apply shading
@@ -175,7 +209,14 @@ public:
                         renderer.zbuffer(x, y) = depth;
                     }
                 }
+
+#if OPT_EDGE_FUNCTION
+                edges.stepPixel(e0, e1, e2);
+#endif
             }
+#if OPT_EDGE_FUNCTION
+            edges.stepRow();
+#endif
         }
     }
 

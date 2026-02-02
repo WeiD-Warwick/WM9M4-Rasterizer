@@ -6,6 +6,9 @@
 #include "matrix.h"
 #include "colour.h"
 
+#include "AVX_SOA.h"
+#include "Macros.h"
+
 // Represents a vertex in a 3D mesh, including its position, normal, and color
 struct Vertex {
     vec4 p;         // Position of the vertex in 3D space
@@ -35,6 +38,10 @@ public:
     std::vector<Vertex> vertices;       // List of vertices in the mesh
     std::vector<triIndices> triangles;  // List of triangles in the mesh
 
+#if OPT_AVX_SIMD
+    VertexSOA verticesSOA;
+#endif
+
     // Set the uniform color and reflection coefficients for the mesh
     // Input Variables:
     // - _c: Uniform color
@@ -57,8 +64,22 @@ public:
     // - vertex: Position of the vertex
     // - normal: Normal vector for the vertex
     void addVertex(const vec4& vertex, const vec4& normal) {
+#if OPT_AVX_SIMD
+        verticesSOA.p.x.push_back(vertex[0]);
+        verticesSOA.p.y.push_back(vertex[1]);
+        verticesSOA.p.z.push_back(vertex[2]);
+        verticesSOA.p.w.push_back(vertex[3]);
+        verticesSOA.n.x.push_back(normal[0]);
+        verticesSOA.n.y.push_back(normal[1]);
+        verticesSOA.n.z.push_back(normal[2]);
+        verticesSOA.n.w.push_back(0);
+        verticesSOA.c.r.push_back(col[colour::Colour::RED]);
+        verticesSOA.c.g.push_back(col[colour::Colour::GREEN]);
+		verticesSOA.c.b.push_back(col[colour::Colour::BLUE]);
+#else
         Vertex v = { vertex, normal, col };
         vertices.push_back(v);
+#endif
     }
 
     // Add a triangle to the mesh
@@ -67,6 +88,49 @@ public:
     void addTriangle(int v1, int v2, int v3) {
         triangles.emplace_back(v1, v2, v3);
     }
+
+#if OPT_VERTEX_CACHE && !OPT_AVX_SIMD
+    void preProcessVertexCache(matrix& p, float w, float h, std::vector<Vertex>& vcache) {
+        vcache.resize(vertices.size());
+        const float halfW = 0.5f * w;
+        const float halfH = 0.5f * h;
+
+        for (unsigned int i = 0; i < vertices.size(); ++i) {
+            Vertex out;
+            out.p = p * vertices[i].p;
+            out.p.divideW();
+            out.normal = world * vertices[i].normal;
+            out.normal.normalise();
+
+            // Map NDC -> screen
+            out.p[0] = (out.p[0] + 1.f) * halfW;
+            out.p[1] = h - (out.p[1] + 1.f) * halfH;
+
+            out.rgb = vertices[i].rgb;
+            vcache[i] = out;
+        }
+    }
+#elif OPT_VERTEX_CACHE && OPT_AVX_SIMD
+    void preProcessVertexCache(matrix& p, float w, float h, VertexSOA& vcache) {
+        int size = verticesSOA.size();
+        vcache.resize(size);
+
+        const float halfW = 0.5f * w;
+        const float halfH = 0.5f * h;
+
+		// Clip Space Transform
+        avx2::mat4_mul_vec4(p.data(), verticesSOA.p, 0, size, vcache.p);
+
+		// Normal Transform
+        avx2::mat4_mul_vec4(world.data(), verticesSOA.n, 0, size, vcache.n);
+		avx2::normalize3(vcache.n, 0, size);
+
+		// Perspective Divide & Screen Mapping
+		avx2::divideW_and_ScreenMapping(vcache.p, 0, size, halfW, halfH, h);
+
+        vcache.c = verticesSOA.c;
+    }
+#endif
 
     // Display the vertices and triangles of the mesh
     void display() const {

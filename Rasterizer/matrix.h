@@ -4,6 +4,8 @@
 #include <vector>
 #include "vec4.h"
 
+#include "Macros.h"
+
 // Matrix class for 4x4 transformation matrices
 class matrix {
     union {
@@ -19,6 +21,10 @@ public:
 
     // Access matrix elements by row and column
     float& operator()(unsigned int row, unsigned int col) { return m[row][col]; }
+
+#if OPT_AVX_SIMD
+    const float* data() const { return a; }
+#endif
 
     // Display the matrix elements in a readable format
     void display() {
