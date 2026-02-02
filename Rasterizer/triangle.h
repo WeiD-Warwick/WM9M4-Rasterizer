@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "Macros.h"
+
 // Simple support class for a 2D vector
 class vec2D {
 public:
@@ -43,6 +45,14 @@ class triangle {
     float area;        // Area of the triangle
     colour col[3];     // Colors for each vertex of the triangle
 
+#if OPT_INV_AREA
+	float invArea;     // Inverse of the triangle area for optimization
+#endif
+
+#if OPT_BACKFACE_CULLING
+	float signedArea;  // Signed area for backface culling
+#endif
+
 public:
     // Constructor initializes the triangle with three vertices
     // Input Variables:
@@ -55,7 +65,17 @@ public:
         // Calculate the 2D area of the triangle
         vec2D e1 = vec2D(v[1].p - v[0].p);
         vec2D e2 = vec2D(v[2].p - v[0].p);
+
+#if OPT_BACKFACE_CULLING
+        signedArea = (e1.x * e2.y - e1.y * e2.x);
+        area = std::fabs(signedArea);
+#else
         area = std::fabs(e1.x * e2.y - e1.y * e2.x);
+#endif
+
+#if OPT_INV_AREA
+        invArea = (area > 0.f) ? (1.0f / area) : 0.f;
+#endif
     }
 
     // Helper function to compute the cross product for barycentric coordinates
@@ -75,9 +95,15 @@ public:
     // - alpha, beta, gamma: Barycentric coordinates of the point
     // Returns true if the point is inside the triangle, false otherwise
     bool getCoordinates(vec2D p, float& alpha, float& beta, float& gamma) {
+#if OPT_INV_AREA
+        alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) * invArea;
+        beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) * invArea;
+        gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) * invArea;
+#else
         alpha = getC(vec2D(v[0].p), vec2D(v[1].p), p) / area;
         beta = getC(vec2D(v[1].p), vec2D(v[2].p), p) / area;
         gamma = getC(vec2D(v[2].p), vec2D(v[0].p), p) / area;
+#endif
 
         if (alpha < 0.f || beta < 0.f || gamma < 0.f) return false;
         return true;
@@ -107,6 +133,9 @@ public:
         // Skip very small triangles
         if (area < 1.f) return;
 
+#if OPT_BACKFACE_CULLING
+        if (signedArea <= 0.f) return;
+#endif
         // Iterate over the bounding box and check each pixel
         for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
             for (int x = (int)(minV.x); x < (int)ceil(maxV.x); x++) {
@@ -114,17 +143,29 @@ public:
 
                 // Check if the pixel lies inside the triangle
                 if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma)) {
+
+#if OPT_EARLY_Z_TEST
+                    float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    if (renderer.zbuffer(x, y) <= depth || depth <= 0.001f) continue;
+
+                    // Interpolate color, depth, and normals
+                    colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
+                    c.clampColour();
+#else
                     // Interpolate color, depth, and normals
                     colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
                     c.clampColour();
                     float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
+#endif
                     vec4 normal = interpolate(beta, gamma, alpha, v[0].normal, v[1].normal, v[2].normal);
                     normal.normalise();
 
                     // Perform Z-buffer test and apply shading
                     if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
                         // typical shader begin
+#if !OPT_LIGHT_PRENORMALIZE
                         L.omega_i.normalise();
+#endif
                         float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
                         colour a = (c * kd) * (L.L * dot) + (L.ambient * ka); // using kd instead of ka for ambient
                         // typical shader end

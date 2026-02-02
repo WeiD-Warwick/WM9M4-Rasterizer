@@ -1,54 +1,61 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    <Filter Include="Core">
+      <UniqueIdentifier>{c7f1b688-8559-405b-a399-2e8a37f9e7be}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    <Filter Include="Math">
+      <UniqueIdentifier>{94ad5510-82f4-478f-99b4-9930e86fccbf}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Resource Files">
-      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    <Filter Include="Geometry">
+      <UniqueIdentifier>{b26a23ad-e054-4475-b44b-d636947e85df}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Buffers">
+      <UniqueIdentifier>{d61f184f-a95b-4c02-bdd4-32a1cfec6526}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Lighting">
+      <UniqueIdentifier>{0554d321-63e6-4893-99a2-a79676709d0c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third Party">
+      <UniqueIdentifier>{9c273619-dfaa-4cae-95f6-86ce8cdc8b13}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="raster.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="GamesEngineeringBase.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="matrix.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="vec4.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="mesh.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="renderer.h">
+      <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="colour.h">
-      <Filter>Header Files</Filter>
+      <Filter>Math</Filter>
     </ClInclude>
-    <ClInclude Include="zbuffer.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="matrix.h">
+      <Filter>Math</Filter>
     </ClInclude>
-    <ClInclude Include="renderer.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="vec4.h">
+      <Filter>Math</Filter>
     </ClInclude>
-    <ClInclude Include="RNG.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="mesh.h">
+      <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="triangle.h">
-      <Filter>Header Files</Filter>
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="GamesEngineeringBase.h">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+    <ClInclude Include="RNG.h">
+      <Filter>Third Party</Filter>
     </ClInclude>
     <ClInclude Include="light.h">
-      <Filter>Header Files</Filter>
+      <Filter>Lighting</Filter>
     </ClInclude>
+    <ClInclude Include="zbuffer.h">
+      <Filter>Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="Macros.h" />
+    <ClInclude Include="Profiler.h" />
+    <ClInclude Include="AVX_SOA.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="raster.cpp" />
   </ItemGroup>
 </Project>
