@@ -128,6 +128,93 @@ public:
     // - renderer: Renderer object for drawing
     // - L: Light object for shading calculations
     // - ka, kd: Ambient and diffuse lighting coefficients
+#if OPT_EDGE_FUNCTION && OPT_AVX_SIMD
+	// Edge function optimized drawing using AVX SIMD
+    void draw(Renderer& renderer, Light& L, float ka, float kd) {
+        vec2D minV, maxV;
+        getBoundsWindow(renderer.canvas, minV, maxV);
+        if (area < 1.f) return;
+
+        #if OPT_BACKFACE_CULLING
+        if (signedArea <= 0.f) return;
+        #endif
+
+        const int minY = (int)(minV.y);
+        const int maxY = (int)ceil(maxV.y);
+        const int minX = (int)(minV.x);
+        const int maxX = (int)ceil(maxV.x);
+
+        TriangleEdgeFunctions edges(v[0].p, v[1].p, v[2].p);
+        edges.beginRow(minX, minY);
+
+        for (int y = minY; y < maxY; y++) {
+            __m256 e0, e1, e2;
+            edges.getRowStart(e0, e1, e2);
+
+            for (int x = minX; x < maxX; x += 8) {
+                const int mask = edges.insideMask(e0, e1, e2);
+                if (mask) {
+                    alignas(32) float E0[8], E1[8], E2[8];
+                    _mm256_store_ps(E0, e0);
+                    _mm256_store_ps(E1, e1);
+                    _mm256_store_ps(E2, e2);
+
+                    for (int i = 0; i < 8; i++) {
+                        if ((mask & (1 << i)) == 0) continue;
+                        const int px = x + i;
+                        if (px >= maxX) continue;
+
+                        float alpha, beta, gamma;
+                        #if OPT_INV_AREA
+                        alpha = E0[i] * invArea;
+                        beta = E1[i] * invArea;
+                        gamma = E2[i] * invArea;
+                        #else
+                        alpha = E0[i] / area;
+                        beta = E1[i] / area;
+                        gamma = E2[i] / area;
+                        #endif
+
+                        #if OPT_EARLY_Z_TEST
+                        float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
+                        if (renderer.zbuffer(px, y) <= depth || depth <= 0.001f) continue;
+
+                        colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
+                        c.clampColour();
+
+                        #else
+
+                        colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
+                        c.clampColour();
+                        float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
+                        #endif
+
+                        vec4 normal = interpolate(alpha, beta, gamma, v[0].normal, v[1].normal, v[2].normal);
+                        normal.normalise();
+
+                        if (renderer.zbuffer(px, y) > depth && depth > 0.001f) {
+
+                            #if !OPT_LIGHT_PRENORMALIZE
+                            L.omega_i.normalise();
+                            #endif
+
+                            float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
+                            colour a = (c * kd) * (L.L * dot) + (L.ambient * ka);
+                            unsigned char r, g, b;
+                            a.toRGB(r, g, b);
+                            renderer.canvas.draw(px, y, r, g, b);
+                            renderer.zbuffer(px, y) = depth;
+                        }
+                    }
+                }
+                edges.step8Pixels(e0, e1, e2);
+            }
+            edges.stepRow();
+        }
+    }
+
+#elif OPT_EDGE_FUNCTION && !OPT_AVX_SIMD
+	// Edge function optimized drawing without AVX SIMD
     void draw(Renderer& renderer, Light& L, float ka, float kd) {
         vec2D minV, maxV;
 
@@ -137,16 +224,14 @@ public:
         // Skip very small triangles
         if (area < 1.f) return;
 
-#if OPT_BACKFACE_CULLING
+        #if OPT_BACKFACE_CULLING
         if (signedArea <= 0.f) return;
-#endif
+        #endif
 
-
-#if OPT_EDGE_FUNCTION
         const int minY = (int)(minV.y);
-		const int maxY = (int)ceil(maxV.y);
-		const int minX = (int)(minV.x);
-		const int maxX = (int)ceil(maxV.x);
+        const int maxY = (int)ceil(maxV.y);
+        const int minX = (int)(minV.x);
+        const int maxX = (int)ceil(maxV.x);
 
         TriangleEdgeFunctions edges(v[0].p, v[1].p, v[2].p);
         edges.beginRow(minX, minY);
@@ -156,50 +241,46 @@ public:
             edges.getRowStart(e0, e1, e2);
 
             for (int x = minX; x < maxX; x++) {
-				// weights
+                // weights
                 float alpha, beta, gamma;
                 if (e0 >= 0.f && e1 >= 0.f && e2 >= 0.f) {
-#if OPT_INV_AREA
+                    #if OPT_INV_AREA
                     alpha = e0 * invArea;
                     beta = e1 * invArea;
                     gamma = e2 * invArea;
-#else
+                    #else
                     alpha = e0 / area;
                     beta = e1 / area;
                     gamma = e2 / area;
-#endif
+                    #endif
 
-#else
-        // Iterate over the bounding box and check each pixel
-        for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
-            for (int x = (int)(minV.x); x < (int)ceil(maxV.x); x++) {
-                float alpha, beta, gamma;
-                // Check if the pixel lies inside the triangle
-                if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma)) {
-#endif
 
-#if OPT_EARLY_Z_TEST
+                    #if OPT_EARLY_Z_TEST
                     float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
                     if (renderer.zbuffer(x, y) <= depth || depth <= 0.001f) continue;
 
                     // Interpolate color, depth, and normals
                     colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
                     c.clampColour();
-#else
+                    #else
+
                     // Interpolate color, depth, and normals
                     colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
                     c.clampColour();
                     float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
-#endif
+                    #endif
+
                     vec4 normal = interpolate(alpha, beta, gamma, v[0].normal, v[1].normal, v[2].normal);
                     normal.normalise();
 
                     // Perform Z-buffer test and apply shading
                     if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
                         // typical shader begin
-#if !OPT_LIGHT_PRENORMALIZE
+                        
+                        #if !OPT_LIGHT_PRENORMALIZE
                         L.omega_i.normalise();
-#endif
+                        #endif
+
                         float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
                         colour a = (c * kd) * (L.L * dot) + (L.ambient * ka); // using kd instead of ka for ambient
                         // typical shader end
@@ -209,16 +290,72 @@ public:
                         renderer.zbuffer(x, y) = depth;
                     }
                 }
-
-#if OPT_EDGE_FUNCTION
                 edges.stepPixel(e0, e1, e2);
-#endif
             }
-#if OPT_EDGE_FUNCTION
             edges.stepRow();
-#endif
         }
     }
+#else
+	// Standard drawing method without edge function optimization
+    void draw(Renderer& renderer, Light& L, float ka, float kd) {
+        vec2D minV, maxV;
+
+        // Get the screen-space bounds of the triangle
+        getBoundsWindow(renderer.canvas, minV, maxV);
+
+        // Skip very small triangles
+        if (area < 1.f) return;
+
+        #if OPT_BACKFACE_CULLING
+        if (signedArea <= 0.f) return;
+        #endif
+
+        // Iterate over the bounding box and check each pixel
+        for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
+            for (int x = (int)(minV.x); x < (int)ceil(maxV.x); x++) {
+                float alpha, beta, gamma;
+                // Check if the pixel lies inside the triangle
+                if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma)) {
+
+                    #if OPT_EARLY_Z_TEST
+                    float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    if (renderer.zbuffer(x, y) <= depth || depth <= 0.001f) continue;
+
+                    // Interpolate color, depth, and normals
+                    colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
+                    c.clampColour();
+                    #else
+
+                    // Interpolate color, depth, and normals
+                    colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
+                    c.clampColour();
+                    float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    #endif
+
+                    vec4 normal = interpolate(alpha, beta, gamma, v[0].normal, v[1].normal, v[2].normal);
+                    normal.normalise();
+
+                    // Perform Z-buffer test and apply shading
+                    if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
+                        // typical shader begin
+
+                        #if !OPT_LIGHT_PRENORMALIZE
+                        L.omega_i.normalise();
+                        #endif
+
+                        float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
+                        colour a = (c * kd) * (L.L * dot) + (L.ambient * ka); // using kd instead of ka for ambient
+                        // typical shader end
+                        unsigned char r, g, b;
+                        a.toRGB(r, g, b);
+                        renderer.canvas.draw(x, y, r, g, b);
+                        renderer.zbuffer(x, y) = depth;
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     // Compute the 2D bounds of the triangle
     // Output Variables:

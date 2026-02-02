@@ -19,6 +19,15 @@
 #include "Macros.h"
 #include "Profiler.h"
 
+static inline Vertex LoadVertexFromSOA(const VertexSOA& vcache, unsigned int idx) {
+    Vertex v;
+    v.p = vec4(vcache.p.x[idx], vcache.p.y[idx], vcache.p.z[idx], vcache.p.w[idx]);
+    v.normal = vec4(vcache.n.x[idx], vcache.n.y[idx], vcache.n.z[idx], vcache.n.w[idx]);
+    v.rgb = colour(vcache.c.r[idx], vcache.c.g[idx], vcache.c.b[idx]);
+    return v;
+}
+
+
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
 // - renderer: The Renderer object used for drawing.
@@ -40,6 +49,18 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 #if OPT_AVX_SIMD
 	VertexSOA cache;
 	mesh->preProcessVertexCache(p, w, h, cache);
+
+    for (triIndices& ind : mesh->triangles) {
+        Vertex t[3];
+        t[0] = LoadVertexFromSOA(cache, ind.v[0]);
+        t[1] = LoadVertexFromSOA(cache, ind.v[1]);
+        t[2] = LoadVertexFromSOA(cache, ind.v[2]);
+
+        if (fabs(t[0].p[2]) > 1.0f || fabs(t[1].p[2]) > 1.0f || fabs(t[2].p[2]) > 1.0f) continue;
+
+        triangle tri(t[0], t[1], t[2]);
+        tri.draw(renderer, L, mesh->ka, mesh->kd);
+    }
 #else
     std::vector<Vertex> vcache;
     mesh->preProcessVertexCache(p, w, h, vcache);

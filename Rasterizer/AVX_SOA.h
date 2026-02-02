@@ -191,7 +191,7 @@ namespace avx2 {
         for (; i < end; ++i) {
             float x = n.x[i], y = n.y[i], z = n.z[i];
             float length = std::sqrt(x * x + y * y + z * z);
-            float invLength = 1.0f / std::sqrt(length);
+            float invLength = 1.0f / length;
             n.x[i] = x * invLength;
             n.y[i] = y * invLength;
             n.z[i] = z * invLength;
