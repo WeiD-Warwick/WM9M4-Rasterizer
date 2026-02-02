@@ -144,6 +144,57 @@ public:
         const int minX = (int)(minV.x);
         const int maxX = (int)ceil(maxV.x);
 
+#if !OPT_LIGHT_PRENORMALIZE
+        L.omega_i.normalise();
+#endif
+
+        const __m256 zero = _mm256_setzero_ps();
+        const __m256 one = _mm256_set1_ps(1.0f);
+#if OPT_INV_AREA
+        const __m256 invAreaVec = _mm256_set1_ps(invArea);
+#else
+        const __m256 invAreaVec = _mm256_set1_ps(1.0f / area);
+#endif
+
+        const __m256 kdVec = _mm256_set1_ps(kd);
+        const __m256 kaVec = _mm256_set1_ps(ka);
+
+        const __m256 lightX = _mm256_set1_ps(L.omega_i[0]);
+        const __m256 lightY = _mm256_set1_ps(L.omega_i[1]);
+        const __m256 lightZ = _mm256_set1_ps(L.omega_i[2]);
+
+        const __m256 lightR = _mm256_set1_ps(L.L[colour::RED]);
+        const __m256 lightG = _mm256_set1_ps(L.L[colour::GREEN]);
+        const __m256 lightB = _mm256_set1_ps(L.L[colour::BLUE]);
+
+        const __m256 ambientR = _mm256_mul_ps(_mm256_set1_ps(L.ambient[colour::RED]), kaVec);
+        const __m256 ambientG = _mm256_mul_ps(_mm256_set1_ps(L.ambient[colour::GREEN]), kaVec);
+        const __m256 ambientB = _mm256_mul_ps(_mm256_set1_ps(L.ambient[colour::BLUE]), kaVec);
+
+        const __m256 v0z = _mm256_set1_ps(v[0].p[2]);
+        const __m256 v1z = _mm256_set1_ps(v[1].p[2]);
+        const __m256 v2z = _mm256_set1_ps(v[2].p[2]);
+
+        const __m256 n0x = _mm256_set1_ps(v[0].normal[0]);
+        const __m256 n0y = _mm256_set1_ps(v[0].normal[1]);
+        const __m256 n0z = _mm256_set1_ps(v[0].normal[2]);
+        const __m256 n1x = _mm256_set1_ps(v[1].normal[0]);
+        const __m256 n1y = _mm256_set1_ps(v[1].normal[1]);
+        const __m256 n1z = _mm256_set1_ps(v[1].normal[2]);
+        const __m256 n2x = _mm256_set1_ps(v[2].normal[0]);
+        const __m256 n2y = _mm256_set1_ps(v[2].normal[1]);
+        const __m256 n2z = _mm256_set1_ps(v[2].normal[2]);
+
+        const __m256 c0r = _mm256_set1_ps(v[0].rgb[colour::RED]);
+        const __m256 c0g = _mm256_set1_ps(v[0].rgb[colour::GREEN]);
+        const __m256 c0b = _mm256_set1_ps(v[0].rgb[colour::BLUE]);
+        const __m256 c1r = _mm256_set1_ps(v[1].rgb[colour::RED]);
+        const __m256 c1g = _mm256_set1_ps(v[1].rgb[colour::GREEN]);
+        const __m256 c1b = _mm256_set1_ps(v[1].rgb[colour::BLUE]);
+        const __m256 c2r = _mm256_set1_ps(v[2].rgb[colour::RED]);
+        const __m256 c2g = _mm256_set1_ps(v[2].rgb[colour::GREEN]);
+        const __m256 c2b = _mm256_set1_ps(v[2].rgb[colour::BLUE]);
+
         TriangleEdgeFunctions edges(v[0].p, v[1].p, v[2].p);
         edges.beginRow(minX, minY);
 
@@ -154,56 +205,83 @@ public:
             for (int x = minX; x < maxX; x += 8) {
                 const int mask = edges.insideMask(e0, e1, e2);
                 if (mask) {
-                    alignas(32) float E0[8], E1[8], E2[8];
-                    _mm256_store_ps(E0, e0);
-                    _mm256_store_ps(E1, e1);
-                    _mm256_store_ps(E2, e2);
+
+                    const __m256 alpha = _mm256_mul_ps(e0, invAreaVec);
+                    const __m256 beta = _mm256_mul_ps(e1, invAreaVec);
+                    const __m256 gamma = _mm256_mul_ps(e2, invAreaVec);
+
+                    const __m256 depth = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(v0z, alpha), _mm256_mul_ps(v1z, beta)),
+                        _mm256_mul_ps(v2z, gamma));
+
+                    __m256 nx = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(n0x, alpha), _mm256_mul_ps(n1x, beta)),
+                        _mm256_mul_ps(n2x, gamma));
+                    __m256 ny = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(n0y, alpha), _mm256_mul_ps(n1y, beta)),
+                        _mm256_mul_ps(n2y, gamma));
+                    __m256 nz = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(n0z, alpha), _mm256_mul_ps(n1z, beta)),
+                        _mm256_mul_ps(n2z, gamma));
+
+                    const __m256 length = _mm256_sqrt_ps(
+                        _mm256_add_ps(
+                            _mm256_mul_ps(nx, nx),
+                            _mm256_add_ps(_mm256_mul_ps(ny, ny), _mm256_mul_ps(nz, nz))));
+                    const __m256 invLength = _mm256_div_ps(one, length);
+                    nx = _mm256_mul_ps(nx, invLength);
+                    ny = _mm256_mul_ps(ny, invLength);
+                    nz = _mm256_mul_ps(nz, invLength);
+
+                    __m256 dot = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(lightX, nx), _mm256_mul_ps(lightY, ny)),
+                        _mm256_mul_ps(lightZ, nz));
+                    dot = _mm256_max_ps(dot, zero);
+
+                    const __m256 cR = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(c0r, alpha), _mm256_mul_ps(c1r, beta)),
+                        _mm256_mul_ps(c2r, gamma));
+                    const __m256 cG = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(c0g, alpha), _mm256_mul_ps(c1g, beta)),
+                        _mm256_mul_ps(c2g, gamma));
+                    const __m256 cB = _mm256_add_ps(
+                        _mm256_add_ps(_mm256_mul_ps(c0b, alpha), _mm256_mul_ps(c1b, beta)),
+                        _mm256_mul_ps(c2b, gamma));
+
+                    const __m256 litR = _mm256_mul_ps(_mm256_mul_ps(cR, kdVec), _mm256_mul_ps(lightR, dot));
+                    const __m256 litG = _mm256_mul_ps(_mm256_mul_ps(cG, kdVec), _mm256_mul_ps(lightG, dot));
+                    const __m256 litB = _mm256_mul_ps(_mm256_mul_ps(cB, kdVec), _mm256_mul_ps(lightB, dot));
+
+                    const __m256 outR = _mm256_min_ps(_mm256_add_ps(litR, ambientR), one);
+                    const __m256 outG = _mm256_min_ps(_mm256_add_ps(litG, ambientG), one);
+                    const __m256 outB = _mm256_min_ps(_mm256_add_ps(litB, ambientB), one);
+
+                    alignas(32) float depthArr[8];
+                    alignas(32) float outRArr[8];
+                    alignas(32) float outGArr[8];
+                    alignas(32) float outBArr[8];
+                    _mm256_store_ps(depthArr, depth);
+                    _mm256_store_ps(outRArr, outR);
+                    _mm256_store_ps(outGArr, outG);
+                    _mm256_store_ps(outBArr, outB);
 
                     for (int i = 0; i < 8; i++) {
                         if ((mask & (1 << i)) == 0) continue;
                         const int px = x + i;
                         if (px >= maxX) continue;
 
-                        float alpha, beta, gamma;
-                        #if OPT_INV_AREA
-                        alpha = E0[i] * invArea;
-                        beta = E1[i] * invArea;
-                        gamma = E2[i] * invArea;
-                        #else
-                        alpha = E0[i] / area;
-                        beta = E1[i] / area;
-                        gamma = E2[i] / area;
-                        #endif
+                        const float d = depthArr[i];
 
                         #if OPT_EARLY_Z_TEST
-                        float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
-                        if (renderer.zbuffer(px, y) <= depth || depth <= 0.001f) continue;
-
-                        colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
-                        c.clampColour();
-
-                        #else
-
-                        colour c = interpolate(alpha, beta, gamma, v[0].rgb, v[1].rgb, v[2].rgb);
-                        c.clampColour();
-                        float depth = interpolate(alpha, beta, gamma, v[0].p[2], v[1].p[2], v[2].p[2]);
+                        if (renderer.zbuffer(px, y) <= d || d <= 0.001f) continue;
                         #endif
 
-                        vec4 normal = interpolate(alpha, beta, gamma, v[0].normal, v[1].normal, v[2].normal);
-                        normal.normalise();
-
-                        if (renderer.zbuffer(px, y) > depth && depth > 0.001f) {
-
-                            #if !OPT_LIGHT_PRENORMALIZE
-                            L.omega_i.normalise();
-                            #endif
-
-                            float dot = std::max(vec4::dot(L.omega_i, normal), 0.0f);
-                            colour a = (c * kd) * (L.L * dot) + (L.ambient * ka);
-                            unsigned char r, g, b;
-                            a.toRGB(r, g, b);
+                        if (renderer.zbuffer(px, y) > d && d > 0.001f) {
+                            unsigned char r = static_cast<unsigned char>(std::floor(outRArr[i] * 255.0f));
+                            unsigned char g = static_cast<unsigned char>(std::floor(outGArr[i] * 255.0f));
+                            unsigned char b = static_cast<unsigned char>(std::floor(outBArr[i] * 255.0f));
                             renderer.canvas.draw(px, y, r, g, b);
-                            renderer.zbuffer(px, y) = depth;
+                            renderer.zbuffer(px, y) = d;
                         }
                     }
                 }
