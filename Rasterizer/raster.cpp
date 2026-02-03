@@ -37,33 +37,20 @@ static inline Vertex LoadVertexFromSOA(const VertexSOA& vcache, unsigned int idx
 void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
+#if OPT_VERTEX_CACHE && OPT_AVX_SIMD
+    VertexSOA vCache;
+    avx2::LightSIMD lp(L, mesh->ka, mesh->kd);
 
-#if OPT_LIGHT_PRENORMALIZE
-    L.omega_i.normalise();
-#endif
+    mesh->preProcessVertexCache(p, renderer.canvas.getWidth(), renderer.canvas.getHeight(), vCache);
 
-#if OPT_VERTEX_CACHE
-    const float w = renderer.canvas.getWidth();
-    const float h = renderer.canvas.getHeight();
+    for (auto& ind : mesh->triangles) {
+        if (vCache.p.z[ind.v[0]] < 0.0f && vCache.p.z[ind.v[1]] < 0.0f && vCache.p.z[ind.v[2]] < 0.0f) continue;
 
-#if OPT_AVX_SIMD
-	VertexSOA cache;
-	mesh->preProcessVertexCache(p, w, h, cache);
-
-    for (triIndices& ind : mesh->triangles) {
-        Vertex t[3];
-        t[0] = LoadVertexFromSOA(cache, ind.v[0]);
-        t[1] = LoadVertexFromSOA(cache, ind.v[1]);
-        t[2] = LoadVertexFromSOA(cache, ind.v[2]);
-
-        if (fabs(t[0].p[2]) > 1.0f || fabs(t[1].p[2]) > 1.0f || fabs(t[2].p[2]) > 1.0f) continue;
-
-        triangle tri(t[0], t[1], t[2]);
-        tri.draw(renderer, L, mesh->ka, mesh->kd);
+        triangle::draw(renderer, vCache, ind, lp);
     }
-#else
+#elif OPT_VERTEX_CACHE && !OPT_AVX_SIMD
     std::vector<Vertex> vcache;
-    mesh->preProcessVertexCache(p, w, h, vcache);
+    mesh->preProcessVertexCache(p, renderer.canvas.getWidth(), renderer.canvas.getHeight(), vcache);
     // Iterate through all triangles in the mesh using cached vertices
     for (triIndices& ind : mesh->triangles) {
         Vertex t[3];
@@ -77,8 +64,6 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
         triangle tri(t[0], t[1], t[2]);
         tri.draw(renderer, L, mesh->ka, mesh->kd);
     }
-#endif
-
 #else
     // Iterate through all triangles in the mesh
     for (triIndices& ind : mesh->triangles) {
@@ -91,7 +76,7 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 
             // Transform normals into world space for accurate lighting
             // no need for perspective correction as no shearing or non-uniform scaling
-            t[i].normal = mesh->world * mesh->vertices[ind.v[i]].normal; 
+            t[i].normal = mesh->world * mesh->vertices[ind.v[i]].normal;
             t[i].normal.normalise();
 
             // Map normalized device coordinates to screen space
@@ -119,6 +104,10 @@ void sceneTest() {
     Renderer renderer;
     // create light source {direction, diffuse intensity, ambient intensity}
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
+    #if OPT_LIGHT_PRENORMALIZE
+    L.omega_i.normalise();
+    #endif
+
     // camera is just a matrix
     matrix camera = matrix::makeIdentity(); // Initialize the camera with identity matrix
 
@@ -185,6 +174,9 @@ void scene1() {
     Renderer renderer;
     matrix camera;
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
+#if OPT_LIGHT_PRENORMALIZE
+    L.omega_i.normalise();
+#endif
 
     bool running = true;
 
@@ -253,6 +245,9 @@ void scene2() {
     Renderer renderer;
     matrix camera = matrix::makeIdentity();
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
+#if OPT_LIGHT_PRENORMALIZE
+    L.omega_i.normalise();
+#endif
 
     std::vector<Mesh*> scene;
 

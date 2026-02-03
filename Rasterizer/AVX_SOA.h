@@ -1,6 +1,16 @@
 #pragma once
 #include <vector>
+#include <cmath>
 #include <immintrin.h>
+
+#include "renderer.h"
+#include "light.h"
+#include "colour.h"
+#include "mesh.h"
+
+#if OPT_EDGE_FUNCTION
+#include "EdgeFunction.h"
+#endif
 
 struct Vec4SOA {
     std::vector<float> x, y, z, w;
@@ -196,5 +206,89 @@ namespace avx2 {
             n.y[i] = y * invLength;
             n.z[i] = z * invLength;
         }
+    }
+
+    struct LightSIMD {
+        __m256 lX, lY, lZ;
+        __m256 lR, lG, lB;
+        __m256 ambR, ambG, ambB;
+        __m256 kd, ka;
+
+        LightSIMD(Light& light, float kd_, float ka_) {
+            // light direction
+            lX = _mm256_set1_ps(light.omega_i[0]);
+            lY = _mm256_set1_ps(light.omega_i[1]);
+            lZ = _mm256_set1_ps(light.omega_i[2]);
+
+            // light colour
+            lR = _mm256_set1_ps(light.L[colour::RED]);
+            lG = _mm256_set1_ps(light.L[colour::GREEN]);
+            lB = _mm256_set1_ps(light.L[colour::BLUE]);
+
+            // ambient
+            ambR = _mm256_set1_ps(light.ambient[colour::RED]);
+            ambG = _mm256_set1_ps(light.ambient[colour::GREEN]);
+            ambB = _mm256_set1_ps(light.ambient[colour::BLUE]);
+
+            kd = _mm256_set1_ps(kd_);
+            ka = _mm256_set1_ps(ka_);
+        }
+    };
+
+    // Context for single triangle raster
+    struct TriContext {
+        __m256 v0z, v1z, v2z;
+        __m256 n0x, n0y, n0z, n1x, n1y, n1z, n2x, n2y, n2z;
+        __m256 r0, g0, b0, r1, g1, b1, r2, g2, b2;
+        __m256 invArea;
+
+        // load data from SOA
+        void load(const VertexSOA& cache, unsigned int i0, unsigned int i1, unsigned int i2, float _invArea) {
+            auto set_z = [&](unsigned int i) { return _mm256_set1_ps(cache.p.z[i]); };
+            v0z = set_z(i0); v1z = set_z(i1); v2z = set_z(i2);
+
+            n0x = _mm256_set1_ps(cache.n.x[i0]); n0y = _mm256_set1_ps(cache.n.y[i0]); n0z = _mm256_set1_ps(cache.n.z[i0]);
+            n1x = _mm256_set1_ps(cache.n.x[i1]); n1y = _mm256_set1_ps(cache.n.y[i1]); n1z = _mm256_set1_ps(cache.n.z[i1]);
+            n2x = _mm256_set1_ps(cache.n.x[i2]); n2y = _mm256_set1_ps(cache.n.y[i2]); n2z = _mm256_set1_ps(cache.n.z[i2]);
+
+            r0 = _mm256_set1_ps(cache.c.r[i0]); g0 = _mm256_set1_ps(cache.c.g[i0]); b0 = _mm256_set1_ps(cache.c.b[i0]);
+            r1 = _mm256_set1_ps(cache.c.r[i1]); g1 = _mm256_set1_ps(cache.c.g[i1]); b1 = _mm256_set1_ps(cache.c.b[i1]);
+            r2 = _mm256_set1_ps(cache.c.r[i2]); g2 = _mm256_set1_ps(cache.c.g[i2]); b2 = _mm256_set1_ps(cache.c.b[i2]);
+
+            invArea = _mm256_set1_ps(_invArea);
+        }
+    };
+
+    // 8 bit SIMD Shader
+    inline void shade_8_pixels(const __m256& e0, const __m256& e1, const __m256& e2,
+        const TriContext& tc, const LightSIMD& lp,
+        float* dOut, float* rOut, float* gOut, float* bOut) {
+        __m256 alpha = _mm256_mul_ps(e0, tc.invArea);
+        __m256 beta = _mm256_mul_ps(e1, tc.invArea);
+        __m256 gamma = _mm256_mul_ps(e2, tc.invArea);
+
+        // depth interpolate
+        _mm256_store_ps(dOut, _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(tc.v0z, alpha), _mm256_mul_ps(tc.v1z, beta)), _mm256_mul_ps(tc.v2z, gamma)));
+
+        // normal interpolate and normalize
+        __m256 nx = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(tc.n0x, alpha), _mm256_mul_ps(tc.n1x, beta)), _mm256_mul_ps(tc.n2x, gamma));
+        __m256 ny = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(tc.n0y, alpha), _mm256_mul_ps(tc.n1y, beta)), _mm256_mul_ps(tc.n2y, gamma));
+        __m256 nz = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(tc.n0z, alpha), _mm256_mul_ps(tc.n1z, beta)), _mm256_mul_ps(tc.n2z, gamma));
+
+        __m256 invLen = _mm256_div_ps(_mm256_set1_ps(1.0f), _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(nx, nx), _mm256_add_ps(_mm256_mul_ps(ny, ny), _mm256_mul_ps(nz, nz)))));
+        nx = _mm256_mul_ps(nx, invLen); ny = _mm256_mul_ps(ny, invLen); nz = _mm256_mul_ps(nz, invLen);
+
+        // Dot(L, N)
+        __m256 dot = _mm256_max_ps(_mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(nx, lp.lX), _mm256_mul_ps(ny, lp.lY)), _mm256_mul_ps(nz, lp.lZ)), _mm256_setzero_ps());
+
+        // calculate color
+        auto calc = [&](const __m256& c0, const __m256& c1, const __m256& c2, const __m256& lCol, const __m256& amb) {
+            __m256 color = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(c0, alpha), _mm256_mul_ps(c1, beta)), _mm256_mul_ps(c2, gamma));
+            return _mm256_min_ps(_mm256_add_ps(_mm256_mul_ps(_mm256_mul_ps(color, lp.kd), _mm256_mul_ps(lCol, dot)), amb), _mm256_set1_ps(1.0f));
+            };
+
+        _mm256_store_ps(rOut, calc(tc.r0, tc.r1, tc.r2, lp.lR, lp.ambR));
+        _mm256_store_ps(gOut, calc(tc.g0, tc.g1, tc.g2, lp.lG, lp.ambG));
+        _mm256_store_ps(bOut, calc(tc.b0, tc.b1, tc.b2, lp.lB, lp.ambB));
     }
 }

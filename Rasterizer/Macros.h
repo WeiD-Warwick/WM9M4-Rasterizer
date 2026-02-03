@@ -11,6 +11,6 @@
 #define OPT_EDGE_FUNCTION			1	// Use edge function for point-in-triangle tests
 
 // ===== Compilation Optimisations =====
-#define OPT_AVX_SIMD				1	// Enable AVX SIMD optimizations
+#define OPT_AVX_SIMD				0	// Enable AVX SIMD optimizations
 
 // ===== Multithreading Optimisations =====
