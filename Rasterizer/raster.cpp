@@ -51,6 +51,9 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
 
             batch.emplace_back([&, sc, vCache, lp, mesh]() {
                 for (auto& ind : mesh->triangles) {
+                    if (std::fabs(vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(vCache->p.z[ind.v[2]]) > 1.0f) { 
+                        continue;
+                    }
                     triangle::drawMT(renderer, *vCache, ind, *lp, sc);
                 }
                 });
@@ -300,6 +303,7 @@ void scene1() {
         delete m;
 
 	profiler.printReport("Scene 1");
+    pool.dumpStats();
 }
 
 // Scene with a grid of cubes and a moving sphere
