@@ -19,15 +19,6 @@
 #include "Macros.h"
 #include "Profiler.h"
 
-static inline Vertex LoadVertexFromSOA(const VertexSOA& vcache, unsigned int idx) {
-    Vertex v;
-    v.p = vec4(vcache.p.x[idx], vcache.p.y[idx], vcache.p.z[idx], vcache.p.w[idx]);
-    v.normal = vec4(vcache.n.x[idx], vcache.n.y[idx], vcache.n.z[idx], vcache.n.w[idx]);
-    v.rgb = colour(vcache.c.r[idx], vcache.c.g[idx], vcache.c.b[idx]);
-    return v;
-}
-
-
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
 // - renderer: The Renderer object used for drawing.
@@ -37,20 +28,24 @@ static inline Vertex LoadVertexFromSOA(const VertexSOA& vcache, unsigned int idx
 void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
+    const float width = renderer.canvas.getWidth();
+    const float height = renderer.canvas.getHeight();
 #if OPT_VERTEX_CACHE && OPT_AVX_SIMD
     VertexSOA vCache;
     avx2::LightSIMD lp(L, mesh->ka, mesh->kd);
 
-    mesh->preProcessVertexCache(p, renderer.canvas.getWidth(), renderer.canvas.getHeight(), vCache);
+    mesh->preProcessVertexCache(p, width, height, vCache);
 
     for (auto& ind : mesh->triangles) {
+
+        // Clip triangles with Z-values outside [-1, 1]
         if (vCache.p.z[ind.v[0]] < 0.0f && vCache.p.z[ind.v[1]] < 0.0f && vCache.p.z[ind.v[2]] < 0.0f) continue;
 
         triangle::draw(renderer, vCache, ind, lp);
     }
 #elif OPT_VERTEX_CACHE && !OPT_AVX_SIMD
     std::vector<Vertex> vcache;
-    mesh->preProcessVertexCache(p, renderer.canvas.getWidth(), renderer.canvas.getHeight(), vcache);
+    mesh->preProcessVertexCache(p, width, height, vcache);
     // Iterate through all triangles in the mesh using cached vertices
     for (triIndices& ind : mesh->triangles) {
         Vertex t[3];
