@@ -172,9 +172,6 @@ public:
                             if (dArr[i] < renderer.zbuffer(px, y) && dArr[i] > 0.001f) {
                                 renderer.canvas.draw(px, y, (char)(rArr[i] * 255), (char)(gArr[i] * 255), (char)(bArr[i] * 255));
                                 renderer.zbuffer(px, y) = dArr[i];
-#if OPT_ZBUFFER
-                                renderer.zbuffer.markDirty(px, y);
-#endif
                             }
                         }
                     }
@@ -260,9 +257,6 @@ public:
                         a.toRGB(r, g, b);
                         renderer.canvas.draw(x, y, r, g, b);
                         renderer.zbuffer(x, y) = depth;
-#if OPT_ZBUFFER
-                        renderer.zbuffer.markDirty(x, y);
-#endif
                     }
                 }
                 edges.stepPixel(e0, e1, e2);
@@ -325,9 +319,6 @@ public:
                         a.toRGB(r, g, b);
                         renderer.canvas.draw(x, y, r, g, b);
                         renderer.zbuffer(x, y) = depth;
-#if OPT_ZBUFFER
-                        renderer.zbuffer.markDirty(x, y);
-#endif
                     }
                 }
             }
