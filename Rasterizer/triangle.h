@@ -145,9 +145,9 @@ public:
         float invArea = 1.0f / area;
 
         // calculate bbox
-        int minX = std::max(0, (int)std::floor(std::min({ x0, x1, x2 })));
+        int minX = std::max(0.f, std::min({ x0, x1, x2 }));
         int maxX = std::min((int)renderer.canvas.getWidth(), (int)std::ceil(std::max({ x0, x1, x2 })));
-        int minY = std::max(0, (int)std::floor(std::min({ y0, y1, y2 })));
+        int minY = std::max(0.f, std::min({ y0, y1, y2 }));
         int maxY = std::min((int)renderer.canvas.getHeight(), (int)std::ceil(std::max({ y0, y1, y2 })));
 
         // Triangle SIMD Context

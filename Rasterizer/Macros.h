@@ -9,7 +9,6 @@
 #define OPT_BACKFACE_CULLING        1	// Enable backface culling to skip rendering of back-facing triangles
 #define OPT_INV_AREA				1	// Use inverse area for barycentric coordinate calculations
 #define OPT_EDGE_FUNCTION			1	// Use edge function for point-in-triangle tests
-#define OPT_ZBUFFER					1
 
 // ===== Compilation Optimisations =====
 #define OPT_AVX_SIMD				1	// Enable AVX SIMD optimizations
