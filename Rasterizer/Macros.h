@@ -15,4 +15,13 @@
 
 // ===== Multithreading Optimisations =====
 #define OPT_MULTITHREAD				1	// Enable multithreading support
-#define MT_MAX_THREADS				11
+
+// ===== Variable Definitions =====
+#define MT_TILE_W 256
+#define MT_TILE_H 256
+#define THREAD_COUNT 12
+#define MT_MAX_THREADS				22
+#define TARGET_TOTAL_LOOPS			23000
+#define WARMUP_LOOPS				3000
+
+#define SCENE_SELECT				1

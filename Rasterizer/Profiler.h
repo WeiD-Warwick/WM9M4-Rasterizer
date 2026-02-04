@@ -1,29 +1,64 @@
 #pragma once
 #include <chrono>
 #include <vector>
+#include <map>
+#include <string>
 #include <numeric>
 #include <algorithm>
 #include <iostream>
 #include <format>
+#include <cmath>
+#include "Macros.h"
 
 class Profiler {
 public:
-    Profiler(int targetTotalLoops = 12000, int warmUpFrames = 2000) {
-        _targetTotalLoops = targetTotalLoops;
-		_warmUpFrames = warmUpFrames;
+    struct RegionData {
+        double totalMs = 0;
+        uint64_t count = 0;
+    };
+
+    // --- RAII ---
+
+    struct ScopedTimer {
+        std::chrono::time_point<std::chrono::high_resolution_clock> start;
+        Profiler& parent;
+        ScopedTimer(Profiler& p) : parent(p), start(std::chrono::high_resolution_clock::now()) {}
+        ~ScopedTimer() {
+            auto end = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(end - start).count();
+            parent.addFrame(ms);
+        }
+    };
+
+    struct RegionTimer {
+        std::chrono::time_point<std::chrono::high_resolution_clock> start;
+        std::string tag;
+        RegionTimer(std::string name) : tag(std::move(name)), start(std::chrono::high_resolution_clock::now()) {}
+        ~RegionTimer() {
+            auto end = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(end - start).count();
+            Profiler::recordRegion(tag, ms);
+        }
+    };
+
+    Profiler(int targetTotalLoops = 12000, int warmUpFrames = 2000)
+        : _targetTotalLoops(targetTotalLoops), _warmUpFrames(warmUpFrames) {
         _frameTimes.reserve(targetTotalLoops + warmUpFrames);
     }
 
-    void startFrame() {
-        _start = std::chrono::high_resolution_clock::now();
+    [[nodiscard]] ScopedTimer scope() {
         _currentLoopTimes++;
+        return ScopedTimer(*this);
     }
 
-    void endFrame() {
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> elapsed = end - _start;
-        _frameTimes.push_back(elapsed.count());
+    static void recordRegion(const std::string& name, double ms) {
+        auto& data = _regionRegistry[name];
+        data.totalMs += ms;
+        data.count++;
     }
+
+    void addFrame(double ms) { _frameTimes.push_back(ms); }
+    bool needToLoop() const { return _currentLoopTimes < _targetTotalLoops; }
 
     void printReport(const std::string& configName) {
         if (_frameTimes.size() <= _warmUpFrames) {
@@ -31,95 +66,55 @@ public:
             return;
         }
 
-		// select valid data range after warm-up
         auto validStart = _frameTimes.begin() + _warmUpFrames;
         auto validEnd = _frameTimes.end();
-        auto validCount = validEnd - validStart;
+        size_t validCount = std::distance(validStart, validEnd);
 
-        // mean + variance
-        double mean = 0.0;
-        double M2 = 0.0;
-        size_t n = 0;
-
-        for (auto it = validStart; it != validEnd; ++it) {
-            n++;
-            const double x = *it;
-            const double delta = x - mean;
-            mean += delta / static_cast<double>(n);
-            const double delta2 = x - mean;
-            M2 += delta * delta2;
+        double mean = 0.0, m2 = 0.0;
+        for (size_t i = 0; i < validCount; ++i) {
+            double x = *(validStart + i);
+            double delta = x - mean;
+            mean += delta / (i + 1);
+            m2 += delta * (x - mean);
         }
+        double stdDev = std::sqrt(m2 / validCount);
 
-        auto variance = (n > 0) ? (M2 / static_cast<double>(n)) : 0.0;
-        auto stdDev = std::sqrt(variance);
-
-
-        // Total time (without warm-up)
-        auto sumMs = std::accumulate(validStart, validEnd, 0.0);
-        auto totalSec = sumMs / 1000.0;
-
-        // P99 frame time (ms) via nth_element (no full sort)
+        // P99
         std::vector<double> tmp(validStart, validEnd);
-        size_t p99Index = static_cast<size_t>(static_cast<double>(validCount) * 0.99);
-        if (p99Index >= validCount) p99Index = validCount - 1;
-        std::nth_element(tmp.begin(), tmp.begin() + p99Index, tmp.end());
-        const double p99Ms = tmp[p99Index];
+        size_t p99Idx = static_cast<size_t>(validCount * 0.99);
+        std::nth_element(tmp.begin(), tmp.begin() + p99Idx, tmp.end());
+        double p99Ms = tmp[p99Idx];
 
-        double worstSum = 0.0;
-        size_t worstCnt = 0;
-        for (auto it = validStart; it != validEnd; ++it) {
-            if (*it >= p99Ms) {
-                worstSum += *it;
-                worstCnt++;
+		// Main Report
+        std::cout << std::format("\n[ PERFORMANCE REPORT: {} ]\n", configName);
+        std::cout << std::format("{:<20}: {} frames\n", "Sample Count", validCount);
+        std::cout << std::format("{:<20}: {:.2f} FPS\n", "Average FPS", 1000.0 / mean);
+        std::cout << std::format("{:<20}: {:.2f} ms\n", "Avg Frame Time", mean);
+        std::cout << std::format("{:<20}: {:.2f} ms\n", "P99 (Worst Case)", p99Ms);
+        std::cout << std::format("{:<20}: {:.2f} ms\n", "Std Dev (Jitter)", stdDev);
+
+		// Region Breakdown
+        if (!_regionRegistry.empty()) {
+            std::cout << "\n[ Region Breakdown (Avg ms/frame) ]\n";
+            for (auto const& [name, data] : _regionRegistry) {
+                std::cout << std::format("{:<20}: {:.4f} ms\n", name, data.totalMs / validCount);
             }
         }
-        const double worstAvgMs = (worstCnt > 0) ? (worstSum / static_cast<double>(worstCnt)) : p99Ms;
-        const double low1pctFps = (worstAvgMs > 0.0) ? (1000.0 / worstAvgMs) : 0.0;
-
-        constexpr int KEY_WIDTH = 30;
-
-        std::cout << "\n==========================================\n";
-        std::cout << std::format("Report: {}\n", configName);
-
-        //std::cout << std::format("{:<{}}: {}\n", "Loop Times", KEY_WIDTH, _frameTimes.size());
-        //std::cout << std::format("{:<{}}: {}\n", "Dropped Warm-up Frames", KEY_WIDTH, _warmUpFrames);
-        std::cout << std::format("{:<{}}: {}\n", "Valid Frame Count", KEY_WIDTH, validCount);
-        std::cout << std::format("{:<{}}: {:.3f} s\n", "Valid Total Time", KEY_WIDTH, totalSec);
-
         std::cout << "------------------------------------------\n";
-
-        // Core metrics (per your request: remove min/max, focus on variance)
-        std::cout << std::format("{:<{}}: {:.4f} ms\n", "Avg Frame Time", KEY_WIDTH, mean);
-        std::cout << std::format("{:<{}}: {:.6f} (ms^2)\n", "Variance", KEY_WIDTH, variance);
-        std::cout << std::format("{:<{}}: {:.4f} ms\n", "Std Dev", KEY_WIDTH, stdDev);
-
-        // Tail metrics
-        std::cout << std::format("{:<{}}: {:.4f} ms\n", "P99 Frame Time", KEY_WIDTH, p99Ms);
-        std::cout << std::format("{:<{}}: {:.4f}\n", "Average FPS", KEY_WIDTH, mean > 0 ? 1000.0 / mean : 0.0);
-        std::cout << std::format("{:<{}}: {:.4f}\n", "Low 1% Avg FPS", KEY_WIDTH, low1pctFps);
-
-        std::cout << "==========================================\n\n";
 
         clear();
     }
 
     void clear() {
         _frameTimes.clear();
+        _regionRegistry.clear();
         _currentLoopTimes = 0;
     }
 
-    bool needToLoop() {
-		return _currentLoopTimes < _targetTotalLoops;
-    }
-
 private:
-    std::chrono::time_point<std::chrono::high_resolution_clock> _start;
+    std::vector<double> _frameTimes;
 
-    // store frame times in milliseconds
-	std::vector<double> _frameTimes;
-
+    static inline std::map<std::string, RegionData> _regionRegistry;
     int _currentLoopTimes = 0;
-
-	int _targetTotalLoops = 20000;
-	int _warmUpFrames = 3000;
+    int _targetTotalLoops, _warmUpFrames;
 };

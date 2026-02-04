@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #define _USE_MATH_DEFINES
 #include <cmath>
 
@@ -20,10 +20,6 @@
 #include "Profiler.h"
 #include "ThreadPool.h"
 
-#define MT_TILE_W 256
-#define MT_TILE_H 256
-#define THREAD_COUNT 5
-
 #if OPT_MULTITHREAD
 void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPool& pool) {
     matrix p = renderer.perspective * camera * mesh->world;
@@ -33,10 +29,16 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
     auto vCache = std::make_shared<VertexSOA>();
     auto lp = std::make_shared<avx2::LightSIMD>(L, mesh->ka, mesh->kd);
 
-    mesh->preProcessVertexCache(p, (float)W, (float)H, *vCache);
+    {
+        Profiler::RegionTimer t("Vertex_Stage");
+        mesh->preProcessVertexCache(p, (float)W, (float)H, *vCache);
+    }
 
     const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
     const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
+
+    std::vector<ThreadPool::Job> batch;
+    batch.reserve(tilesX * tilesY);
 
     for (int ty = 0; ty < tilesY; ++ty) {
         for (int tx = 0; tx < tilesX; ++tx) {
@@ -47,18 +49,15 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
                 std::min((ty + 1) * MT_TILE_H, H)
             };
 
-            pool.submit([&, sc, vCache, lp, mesh]() {
+            batch.emplace_back([&, sc, vCache, lp, mesh]() {
                 for (auto& ind : mesh->triangles) {
-                    const int i0 = ind.v[0], i1 = ind.v[1], i2 = ind.v[2];
-                    if (fabs((*vCache).p.z[i0]) > 1.0f || fabs((*vCache).p.z[i1]) > 1.0f || fabs((*vCache).p.z[i2]) > 1.0f) {
-                        continue;
-                    }
-
                     triangle::drawMT(renderer, *vCache, ind, *lp, sc);
                 }
                 });
         }
     }
+
+    pool.submitBatch(batch);
 }
 
 #else
@@ -262,7 +261,7 @@ void scene1() {
 
     // Main rendering loop
     while (profiler.needToLoop()) {
-        profiler.startFrame();
+        auto frameTimer = profiler.scope();
         renderer.canvas.checkInput();
         renderer.clear();
 
@@ -295,8 +294,6 @@ void scene1() {
         }
 #endif
         renderer.present();
-
-		profiler.endFrame();
     }
 
     for (auto& m : scene)
@@ -353,7 +350,7 @@ void scene2() {
 
     bool running = true;
     while (profiler.needToLoop()) {
-		profiler.startFrame();
+        auto frameTimer = profiler.scope();
         renderer.canvas.checkInput();
         renderer.clear();
 
@@ -387,24 +384,30 @@ void scene2() {
 #endif
 
         renderer.present();
-
-		profiler.endFrame();
     }
 
     for (auto& m : scene)
         delete m;
 
 	profiler.printReport("Scene 2");
+#if OPT_MULTITHREAD
+	pool.dumpStats();
+#endif
 }
 
 // Entry point of the application
 // No input variables
 int main() {
-    // Uncomment the desired scene function to run
-    scene1();
-    //scene2();
-    //sceneTest(); 
-    
+
+    if (SCENE_SELECT == 1) {
+        scene1();
+    }
+    else if (SCENE_SELECT == 2) {
+        scene2();
+    }
+    else {
+        sceneTest();
+    }
 
     return 0;
 }
