@@ -50,8 +50,9 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
             pool.submit([&, sc, vCache, lp, mesh]() {
                 for (auto& ind : mesh->triangles) {
                     const int i0 = ind.v[0], i1 = ind.v[1], i2 = ind.v[2];
-                    if ((*vCache).p.z[i0] < 0.0f && (*vCache).p.z[i1] < 0.0f && (*vCache).p.z[i2] < 0.0f)
+                    if (fabs((*vCache).p.z[i0]) > 1.0f || fabs((*vCache).p.z[i1]) > 1.0f || fabs((*vCache).p.z[i2]) > 1.0f) {
                         continue;
+                    }
 
                     triangle::drawMT(renderer, *vCache, ind, *lp, sc);
                 }
@@ -59,7 +60,6 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
         }
     }
 }
-
 
 #else
 
@@ -83,7 +83,9 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
     for (auto& ind : mesh->triangles) {
 
         // Clip triangles with Z-values outside [-1, 1]
-        if (vCache.p.z[ind.v[0]] < 0.0f && vCache.p.z[ind.v[1]] < 0.0f && vCache.p.z[ind.v[2]] < 0.0f) continue;
+        if (fabs(vCache.p.z[ind.v[0]]) > 1.0f || fabs(vCache.p.z[ind.v[1]]) > 1.0f || fabs(vCache.p.z[ind.v[2]]) > 1.0f) {
+            continue;
+        }
 
         triangle::draw(renderer, vCache, ind, lp);
     }
@@ -399,8 +401,8 @@ void scene2() {
 // No input variables
 int main() {
     // Uncomment the desired scene function to run
-    //scene1();
-    scene2();
+    scene1();
+    //scene2();
     //sceneTest(); 
     
 
