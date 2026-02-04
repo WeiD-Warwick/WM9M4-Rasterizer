@@ -41,7 +41,7 @@ public:
         }
     };
 
-    Profiler(int targetTotalLoops = 12000, int warmUpFrames = 2000)
+    Profiler(int targetTotalLoops = TARGET_TOTAL_LOOPS, int warmUpFrames = WARMUP_LOOPS)
         : _targetTotalLoops(targetTotalLoops), _warmUpFrames(warmUpFrames) {
         _frameTimes.reserve(targetTotalLoops + warmUpFrames);
     }
