@@ -14,3 +14,5 @@
 #define OPT_AVX_SIMD				1	// Enable AVX SIMD optimizations
 
 // ===== Multithreading Optimisations =====
+#define OPT_MULTITHREAD				1	// Enable multithreading support
+#define MT_MAX_THREADS				11

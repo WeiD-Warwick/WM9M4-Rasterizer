@@ -14,6 +14,12 @@
 #include "EdgeFunction.h"
 #endif
 
+struct ScissorRect {
+    int minX, minY;
+    int maxX, maxY;
+};
+
+
 // Simple support class for a 2D vector
 class vec2D {
 public:
@@ -130,8 +136,12 @@ public:
     // - ka, kd: Ambient and diffuse lighting coefficients
 #if OPT_EDGE_FUNCTION && OPT_AVX_SIMD && OPT_INV_AREA && OPT_BACKFACE_CULLING
 	// Edge function optimized drawing using AVX SIMD
-    static void draw(Renderer& renderer, const VertexSOA& cache, const triIndices& ind, const avx2::LightSIMD& lp) {
-        // load co
+#if OPT_MULTITHREAD
+    static void drawMT(Renderer& renderer, VertexSOA& cache, triIndices& ind, avx2::LightSIMD& lp, const ScissorRect& sc) {
+#else
+    static void draw(Renderer& renderer, VertexSOA& cache, triIndices& ind, avx2::LightSIMD& lp) {
+#endif
+        // load coords
         float x0 = cache.p.x[ind.v[0]];
         float y0 = cache.p.y[ind.v[0]];
         float x1 = cache.p.x[ind.v[1]];
@@ -144,11 +154,29 @@ public:
         if (area <= 0.f) return;
         float invArea = 1.0f / area;
 
+        const int W = (int)renderer.canvas.getWidth();
+        const int H = (int)renderer.canvas.getHeight();
+
         // calculate bbox
-        int minX = std::max(0.f, std::min({ x0, x1, x2 }));
-        int maxX = std::min((int)renderer.canvas.getWidth(), (int)std::ceil(std::max({ x0, x1, x2 })));
-        int minY = std::max(0.f, std::min({ y0, y1, y2 }));
-        int maxY = std::min((int)renderer.canvas.getHeight(), (int)std::ceil(std::max({ y0, y1, y2 })));
+        int triMinX = (int)std::floor(std::min({ x0, x1, x2 }));
+        int triMaxX = (int)std::ceil(std::max({ x0, x1, x2 }));
+        int triMinY = (int)std::floor(std::min({ y0, y1, y2 }));
+        int triMaxY = (int)std::ceil(std::max({ y0, y1, y2 }));
+
+        // clamp to screen
+        int minX = std::max(0, triMinX);
+        int minY = std::max(0, triMinY);
+        int maxX = std::min(W, triMaxX);
+        int maxY = std::min(H, triMaxY);
+
+#if OPT_MULTITHREAD
+        minX = std::max(minX, sc.minX);
+        minY = std::max(minY, sc.minY);
+        maxX = std::min(maxX, sc.maxX);
+        maxY = std::min(maxY, sc.maxY);
+#endif
+
+        if (minX >= maxX || minY >= maxY) return;
 
         // Triangle SIMD Context
         avx2::TriContext context;
@@ -169,9 +197,13 @@ public:
                     for (int i = 0; i < 8; ++i) {
                         int px = x + i;
                         if ((mask & (1 << i)) && px < maxX) {
-                            if (dArr[i] < renderer.zbuffer(px, y) && dArr[i] > 0.001f) {
-                                renderer.canvas.draw(px, y, (char)(rArr[i] * 255), (char)(gArr[i] * 255), (char)(bArr[i] * 255));
-                                renderer.zbuffer(px, y) = dArr[i];
+                            float d = dArr[i];
+                            if (d > 0.001f && d < renderer.zbuffer(px, y)) {
+                                renderer.canvas.draw(px, y,
+                                    (unsigned char)(rArr[i] * 255.0f),
+                                    (unsigned char)(gArr[i] * 255.0f),
+                                    (unsigned char)(bArr[i] * 255.0f));
+                                renderer.zbuffer(px, y) = d;
                             }
                         }
                     }

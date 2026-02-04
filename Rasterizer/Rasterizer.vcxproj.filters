@@ -55,6 +55,7 @@
     <ClInclude Include="Profiler.h" />
     <ClInclude Include="AVX_SOA.h" />
     <ClInclude Include="EdgeFunction.h" />
+    <ClInclude Include="ThreadPool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="raster.cpp" />

@@ -146,6 +146,7 @@
     <ClInclude Include="Profiler.h" />
     <ClInclude Include="renderer.h" />
     <ClInclude Include="RNG.h" />
+    <ClInclude Include="ThreadPool.h" />
     <ClInclude Include="triangle.h" />
     <ClInclude Include="vec4.h" />
     <ClInclude Include="zbuffer.h" />

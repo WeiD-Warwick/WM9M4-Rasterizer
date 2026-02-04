@@ -18,6 +18,50 @@
 
 #include "Macros.h"
 #include "Profiler.h"
+#include "ThreadPool.h"
+
+#define MT_TILE_W 256
+#define MT_TILE_H 256
+#define THREAD_COUNT 5
+
+#if OPT_MULTITHREAD
+void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPool& pool) {
+    matrix p = renderer.perspective * camera * mesh->world;
+    const int W = (int)renderer.canvas.getWidth();
+    const int H = (int)renderer.canvas.getHeight();
+
+    auto vCache = std::make_shared<VertexSOA>();
+    auto lp = std::make_shared<avx2::LightSIMD>(L, mesh->ka, mesh->kd);
+
+    mesh->preProcessVertexCache(p, (float)W, (float)H, *vCache);
+
+    const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
+    const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
+
+    for (int ty = 0; ty < tilesY; ++ty) {
+        for (int tx = 0; tx < tilesX; ++tx) {
+            ScissorRect sc{
+                tx * MT_TILE_W,
+                ty * MT_TILE_H,
+                std::min((tx + 1) * MT_TILE_W, W),
+                std::min((ty + 1) * MT_TILE_H, H)
+            };
+
+            pool.submit([&, sc, vCache, lp, mesh]() {
+                for (auto& ind : mesh->triangles) {
+                    const int i0 = ind.v[0], i1 = ind.v[1], i2 = ind.v[2];
+                    if ((*vCache).p.z[i0] < 0.0f && (*vCache).p.z[i1] < 0.0f && (*vCache).p.z[i2] < 0.0f)
+                        continue;
+
+                    triangle::drawMT(renderer, *vCache, ind, *lp, sc);
+                }
+                });
+        }
+    }
+}
+
+
+#else
 
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
@@ -28,8 +72,8 @@
 void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
-    const float width = renderer.canvas.getWidth();
-    const float height = renderer.canvas.getHeight();
+    float width = renderer.canvas.getWidth();
+    float height = renderer.canvas.getHeight();
 #if OPT_VERTEX_CACHE && OPT_AVX_SIMD
     VertexSOA vCache;
     avx2::LightSIMD lp(L, mesh->ka, mesh->kd);
@@ -93,6 +137,8 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 #endif
 }
 
+#endif
+
 // Test scene function to demonstrate rendering with user-controlled transformations
 // No input variables
 void sceneTest() {
@@ -102,6 +148,10 @@ void sceneTest() {
     #if OPT_LIGHT_PRENORMALIZE
     L.omega_i.normalise();
     #endif
+
+#if OPT_MULTITHREAD
+    ThreadPool pool(THREAD_COUNT);
+#endif
 
     // camera is just a matrix
     matrix camera = matrix::makeIdentity(); // Initialize the camera with identity matrix
@@ -141,8 +191,16 @@ void sceneTest() {
         if (renderer.canvas.keyPressed('E')) z += -0.1f;
 
         // Render each object in the scene
-        for (auto& m : scene)
+#if OPT_MULTITHREAD
+        for (auto& m : scene) {
+            renderMT(renderer, m, camera, L, pool);
+        }
+        pool.waitIdle();
+#else
+        for (auto& m : scene) {
             render(renderer, m, camera, L);
+        }
+#endif
 
         renderer.present(); // Display the rendered frame
     }
@@ -171,6 +229,10 @@ void scene1() {
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
 #if OPT_LIGHT_PRENORMALIZE
     L.omega_i.normalise();
+#endif
+
+#if OPT_MULTITHREAD
+    ThreadPool pool(THREAD_COUNT);
 #endif
 
     bool running = true;
@@ -220,8 +282,16 @@ void scene1() {
             }
         }
 
-        for (auto& m : scene)
+#if OPT_MULTITHREAD
+        for (auto& m : scene) {
+            renderMT(renderer, m, camera, L, pool);
+        }
+        pool.waitIdle();
+#else
+        for (auto& m : scene) {
             render(renderer, m, camera, L);
+        }
+#endif
         renderer.present();
 
 		profiler.endFrame();
@@ -242,6 +312,10 @@ void scene2() {
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
 #if OPT_LIGHT_PRENORMALIZE
     L.omega_i.normalise();
+#endif
+
+#if OPT_MULTITHREAD
+    ThreadPool pool(THREAD_COUNT);
 #endif
 
     std::vector<Mesh*> scene;
@@ -299,8 +373,17 @@ void scene2() {
 
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
-        for (auto& m : scene)
+#if OPT_MULTITHREAD
+        for (auto& m : scene) {
+            renderMT(renderer, m, camera, L, pool);
+        }
+        pool.waitIdle();
+#else
+        for (auto& m : scene) {
             render(renderer, m, camera, L);
+        }
+#endif
+
         renderer.present();
 
 		profiler.endFrame();
