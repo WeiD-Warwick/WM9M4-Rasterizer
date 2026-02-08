@@ -19,8 +19,8 @@
 
 // ===== For Scene 3 =====
 #define OPT_RENDER_SCENE			1
-#define OPT_TRI_BIN					0
-#define OPT_FRUSTUM_CULLING			0
+#define OPT_TRI_BIN					1
+#define OPT_FRUSTUM_CULLING			1
 
 // ===== Variable Definitions =====
 // 1024 768
@@ -55,7 +55,7 @@
 #define TARGET_TOTAL_LOOPS			32000
 #define WARMUP_LOOPS				5000
 
-#define SCENE_SELECT				2
+#define SCENE_SELECT				3
 
 // Scene 4
 // 22.37 FPS

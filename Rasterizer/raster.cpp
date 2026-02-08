@@ -643,21 +643,49 @@ void scene3() {
     std::vector<Mesh*> scene;
 
     struct rRot { float x; float y; float z; }; // Structure to store random rotation parameters
-    std::vector<rRot> rotations;
+    struct RotatingMesh {
+        Mesh* mesh;
+        rRot rot;
+    };
+    std::vector<RotatingMesh> rotatingMeshes;
 
     RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
 
-    // Create a grid of cubes with random rotations
-    for (unsigned int y = 0; y < 50; y++) {
-        for (unsigned int x = 0; x < 100; x++) {
-            Mesh* m = new Mesh();
-            *m = Mesh::makeCube(1.f);
-            scene.push_back(m);
-            m->world = matrix::makeTranslation(-100.0f + (static_cast<float>(x) * 2.f), 50.0f - (static_cast<float>(y) * 2.f), -30.f);
-            rRot r{ rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f) };
-            rotations.push_back(r);
+    auto addCube = [&](float x, float y, float z, float size) {
+        Mesh* m = new Mesh();
+        *m = Mesh::makeCube(size);
+        scene.push_back(m);
+        m->world = matrix::makeTranslation(x, y, z);
+        rRot r{ rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f) };
+        rotatingMeshes.push_back({ m, r });
+        };
+
+    // Dense cluster on the left to create heavy tiles (load imbalance in parallel rendering)
+    for (unsigned int y = 0; y < 40; y++) {
+        for (unsigned int x = 0; x < 65; x++) {
+            addCube(-120.0f + (static_cast<float>(x) * 2.0f), 45.0f - (static_cast<float>(y) * 2.0f), -35.f, 1.f);
         }
     }
+
+    // Sparse cluster on the right to keep some tiles light
+    for (unsigned int y = 0; y < 10; y++) {
+        for (unsigned int x = 0; x < 20; x++) {
+            addCube(30.0f + (static_cast<float>(x) * 3.5f), 20.0f - (static_cast<float>(y) * 3.5f), -60.f, 1.5f);
+        }
+    }
+
+    // Offscreen cluster for frustum culling tests
+    for (unsigned int y = 0; y < 20; y++) {
+        for (unsigned int x = 0; x < 20; x++) {
+            addCube(210.0f + (static_cast<float>(x) * 3.f), 80.0f - (static_cast<float>(y) * 3.f), -45.f, 1.f);
+        }
+    }
+
+    // Large occluder to increase overdraw and highlight early-z behavior
+    Mesh* occluder = new Mesh();
+    *occluder = Mesh::makeRectangle(-80.f, -45.f, 20.f, 45.f);
+    occluder->world = matrix::makeTranslation(-20.f, 0.f, -22.f);
+    scene.push_back(occluder);
 
     // Create a sphere and add it to the scene
     Mesh* sphere = new Mesh();
@@ -667,23 +695,20 @@ void scene3() {
     float sphereStep = 0.1f;
     sphere->world = matrix::makeTranslation(sphereOffset, 0.f, -6.f);
 
-    auto start = std::chrono::high_resolution_clock::now();
-    std::chrono::time_point<std::chrono::high_resolution_clock> end;
     int cycle = 0;
 
     const bool reportCycleTiming = true;
     auto cycleStart = std::chrono::high_resolution_clock::now();
     std::chrono::time_point<std::chrono::high_resolution_clock> cycleEnd;
 
-    bool running = true;
     while (profiler.needToLoop()) {
         auto frameTimer = profiler.scope();
         renderer.canvas.checkInput();
         renderer.clear();
 
-        // Rotate each cube in the grid
-        for (unsigned int i = 0; i < rotations.size(); i++)
-            scene[i]->world = scene[i]->world * matrix::makeRotateXYZ(rotations[i].x, rotations[i].y, rotations[i].z);
+        // Rotate each cube in the scene
+        for (auto& r : rotatingMeshes)
+            r.mesh->world = r.mesh->world * matrix::makeRotateXYZ(r.rot.x, r.rot.y, r.rot.z);
 
         // Move the sphere back and forth
         sphereOffset += sphereStep;
@@ -691,13 +716,9 @@ void scene3() {
         if (sphereOffset > 6.0f || sphereOffset < -6.0f) {
             sphereStep *= -1.f;
             if (++cycle % 2 == 0) {
-                //end = std::chrono::high_resolution_clock::now();
-                //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
-                //start = std::chrono::high_resolution_clock::now();
-
                 if (reportCycleTiming) {
                     cycleEnd = std::chrono::high_resolution_clock::now();
-                    Profiler::recordRegion("Scene2 Cycle", std::chrono::duration<double, std::milli>(cycleEnd - cycleStart).count());
+                    Profiler::recordRegion("Scene3 Cycle", std::chrono::duration<double, std::milli>(cycleEnd - cycleStart).count());
                     cycleStart = cycleEnd;
                 }
             }
@@ -725,7 +746,7 @@ void scene3() {
     for (auto& m : scene)
         delete m;
 
-    profiler.printReport("Scene 2");
+    profiler.printReport("Scene 3");
 #if OPT_MULTITHREAD
     pool.dumpStats();
 #endif
