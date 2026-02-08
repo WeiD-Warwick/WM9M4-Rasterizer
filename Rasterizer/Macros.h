@@ -3,6 +3,7 @@
 // ===== Transform Optimisations =====
 #define OPT_VERTEX_CACHE			1	// Cache transformed vertices to avoid redundant calculations
 #define OPT_TRI_BIN					1
+#define OPT_FRUSTUM_CULLING			1
 
 // ===== Pipeline Optimisations =====
 #define OPT_LIGHT_PRE_NORMALIZE		1	// Pre-normalize light direction before per-pixel lighting calculations
@@ -16,6 +17,7 @@
 
 // ===== Multithreading Optimisations =====
 #define OPT_MULTITHREAD				1	// Enable multithreading support
+#define OPT_RENDER_SCENE			0
 
 // ===== Variable Definitions =====
 // 1024 768
@@ -43,12 +45,15 @@
 // thread 8 (256 384)  302
 // thread 12(256 256)  176
 
-
 #define MT_TILE_W 512
 #define MT_TILE_H 384
-#define THREAD_COUNT 4
+#define THREAD_COUNT 8
 #define MT_MAX_THREADS				22
-#define TARGET_TOTAL_LOOPS			35000
-#define WARMUP_LOOPS				5000
+#define TARGET_TOTAL_LOOPS			12000
+#define WARMUP_LOOPS				2000
 
-#define SCENE_SELECT				2
+#define SCENE_SELECT				4
+
+// Scene 4
+// 22.37 FPS
+// 127.57 FPS

@@ -114,6 +114,124 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
     pool.submitBatch(batch);
 }
 
+struct MeshRenderData {
+    Mesh* mesh = nullptr;
+    std::shared_ptr<VertexSOA> vCache;
+    std::shared_ptr<avx2::LightSIMD> lp;
+#if OPT_TRI_BIN
+    std::shared_ptr<std::vector<std::vector<int>>> triangleBins;
+#endif
+};
+
+void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& camera, Light& L, ThreadPool& pool) {
+    const int W = static_cast<int>(renderer.canvas.getWidth());
+    const int H = static_cast<int>(renderer.canvas.getHeight());
+
+    const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
+    const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
+
+    auto renderData = std::make_shared<std::vector<MeshRenderData>>();
+    renderData->reserve(scene.size());
+
+    for (auto* mesh : scene) {
+        MeshRenderData data;
+        data.mesh = mesh;
+        data.vCache = std::make_shared<VertexSOA>();
+        data.lp = std::make_shared<avx2::LightSIMD>(L, mesh->ka, mesh->kd);
+
+        matrix p = renderer.perspective * camera * mesh->world;
+        {
+            Profiler::RegionTimer t("Vertex_Stage");
+            mesh->preProcessVertexCache(p, static_cast<float>(W), static_cast<float>(H), *data.vCache);
+        }
+
+#if OPT_TRI_BIN
+        data.triangleBins = std::make_shared<std::vector<std::vector<int>>>(tilesX * tilesY);
+
+        for (int i = 0; i < static_cast<int>(mesh->triangles.size()); ++i) {
+            auto& ind = mesh->triangles[i];
+            if (std::fabs(data.vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[2]]) > 1.0f) {
+                continue;
+            }
+
+            float x0 = data.vCache->p.x[ind.v[0]];
+            float y0 = data.vCache->p.y[ind.v[0]];
+            float x1 = data.vCache->p.x[ind.v[1]];
+            float y1 = data.vCache->p.y[ind.v[1]];
+            float x2 = data.vCache->p.x[ind.v[2]];
+            float y2 = data.vCache->p.y[ind.v[2]];
+
+            int triMinX = static_cast<int>(std::floor(std::min({ x0, x1, x2 })));
+            int triMaxX = static_cast<int>(std::ceil(std::max({ x0, x1, x2 })));
+            int triMinY = static_cast<int>(std::floor(std::min({ y0, y1, y2 })));
+            int triMaxY = static_cast<int>(std::ceil(std::max({ y0, y1, y2 })));
+
+            int minX = std::max(0, triMinX);
+            int minY = std::max(0, triMinY);
+            int maxX = std::min(W, triMaxX);
+            int maxY = std::min(H, triMaxY);
+
+            if (minX >= maxX || minY >= maxY) {
+                continue;
+            }
+
+            int tileMinX = minX / MT_TILE_W;
+            int tileMaxX = (maxX - 1) / MT_TILE_W;
+            int tileMinY = minY / MT_TILE_H;
+            int tileMaxY = (maxY - 1) / MT_TILE_H;
+
+            for (int ty = tileMinY; ty <= tileMaxY; ++ty) {
+                for (int tx = tileMinX; tx <= tileMaxX; ++tx) {
+                    (*data.triangleBins)[ty * tilesX + tx].push_back(i);
+                }
+            }
+        }
+#endif
+
+        renderData->push_back(std::move(data));
+    }
+
+    std::vector<ThreadPool::Job> batch;
+    batch.reserve(tilesX * tilesY);
+
+    for (int ty = 0; ty < tilesY; ++ty) {
+        for (int tx = 0; tx < tilesX; ++tx) {
+            ScissorRect sc{
+                tx * MT_TILE_W,
+                ty * MT_TILE_H,
+                std::min((tx + 1) * MT_TILE_W, W),
+                std::min((ty + 1) * MT_TILE_H, H)
+            };
+
+#if OPT_TRI_BIN
+            int tileIndex = ty * tilesX + tx;
+            batch.emplace_back([&, sc, renderData, tileIndex]() {
+                for (const auto& data : *renderData) {
+                    const auto& bin = (*data.triangleBins)[tileIndex];
+                    for (int triIndex : bin) {
+                        auto& ind = data.mesh->triangles[triIndex];
+                        triangle::drawMT(renderer, *data.vCache, ind, *data.lp, sc);
+                    }
+                }
+                });
+#else
+            batch.emplace_back([&, sc, renderData]() {
+                for (const auto& data : *renderData) {
+                    for (auto& ind : data.mesh->triangles) {
+                        if (std::fabs(data.vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[2]]) > 1.0f) {
+                            continue;
+                        }
+                        triangle::drawMT(renderer, *data.vCache, ind, *data.lp, sc);
+                    }
+                }
+                });
+#endif
+        }
+    }
+
+    pool.submitBatch(batch);
+}
+
 #else
 
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
@@ -338,9 +456,13 @@ void scene1() {
         }
 
 #if OPT_MULTITHREAD
+#if OPT_RENDER_SCENE
+        renderSceneMT(renderer, scene, camera, L, pool);
+#else
         for (auto& m : scene) {
             renderMT(renderer, m, camera, L, pool);
         }
+#endif
         pool.waitIdle();
 #else
         for (auto& m : scene) {
@@ -440,9 +562,13 @@ void scene2() {
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
 #if OPT_MULTITHREAD
+#if OPT_RENDER_SCENE
+        renderSceneMT(renderer, scene, camera, L, pool);
+#else
         for (auto& m : scene) {
             renderMT(renderer, m, camera, L, pool);
         }
+#endif
         pool.waitIdle();
 #else
         for (auto& m : scene) {
@@ -624,9 +750,13 @@ void scene3() {
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
 #if OPT_MULTITHREAD
+#if OPT_RENDER_SCENE
+        renderSceneMT(renderer, scene, camera, L, pool);
+#else
         for (auto& m : scene) {
             renderMT(renderer, m, camera, L, pool);
         }
+#endif
         pool.waitIdle();
 #else
         for (auto& m : scene) {
@@ -647,6 +777,111 @@ void scene3() {
 }
 
 
+void scene4() {
+    Profiler profiler;
+    Renderer renderer;
+    matrix camera = matrix::makeIdentity();
+    Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
+#if OPT_LIGHT_PRE_NORMALIZE
+    L.omega_i.normalise();
+#endif
+
+#if OPT_MULTITHREAD
+    ThreadPool pool(THREAD_COUNT);
+#endif
+
+    std::vector<Mesh*> scene;
+
+    struct rRot { float x; float y; float z; }; // Structure to store random rotation parameters
+    std::vector<rRot> rotations;
+
+    RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
+
+    // Create a grid of cubes with random rotations
+    for (unsigned int y = 0; y < 50; y++) {
+        for (unsigned int x = 0; x < 100; x++) {
+            Mesh* m = new Mesh();
+            *m = Mesh::makeCube(1.f);
+            scene.push_back(m);
+            m->world = matrix::makeTranslation(-100.0f + (static_cast<float>(x) * 2.f), 50.0f - (static_cast<float>(y) * 2.f), -30.f);
+            rRot r{ rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f) };
+            rotations.push_back(r);
+        }
+    }
+
+    // Create a sphere and add it to the scene
+    Mesh* sphere = new Mesh();
+    *sphere = Mesh::makeSphere(1.0f, 10, 20);
+    scene.push_back(sphere);
+    float sphereOffset = -6.f;
+    float sphereStep = 0.1f;
+    sphere->world = matrix::makeTranslation(sphereOffset, 0.f, -6.f);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    std::chrono::time_point<std::chrono::high_resolution_clock> end;
+    int cycle = 0;
+
+    const bool reportCycleTiming = true;
+    auto cycleStart = std::chrono::high_resolution_clock::now();
+    std::chrono::time_point<std::chrono::high_resolution_clock> cycleEnd;
+
+    bool running = true;
+    while (profiler.needToLoop()) {
+        auto frameTimer = profiler.scope();
+        renderer.canvas.checkInput();
+        renderer.clear();
+
+        // Rotate each cube in the grid
+        for (unsigned int i = 0; i < rotations.size(); i++)
+            scene[i]->world = scene[i]->world * matrix::makeRotateXYZ(rotations[i].x, rotations[i].y, rotations[i].z);
+
+        // Move the sphere back and forth
+        sphereOffset += sphereStep;
+        sphere->world = matrix::makeTranslation(sphereOffset, 0.f, -6.f);
+        if (sphereOffset > 6.0f || sphereOffset < -6.0f) {
+            sphereStep *= -1.f;
+            if (++cycle % 2 == 0) {
+                //end = std::chrono::high_resolution_clock::now();
+                //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                //start = std::chrono::high_resolution_clock::now();
+
+                if (reportCycleTiming) {
+                    cycleEnd = std::chrono::high_resolution_clock::now();
+                    Profiler::recordRegion("Scene2 Cycle", std::chrono::duration<double, std::milli>(cycleEnd - cycleStart).count());
+                    cycleStart = cycleEnd;
+                }
+            }
+        }
+
+        if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
+
+#if OPT_MULTITHREAD
+        #if OPT_RENDER_SCENE
+        renderSceneMT(renderer, scene, camera, L, pool);
+        #else
+        for (auto& m : scene) {
+            renderMT(renderer, m, camera, L, pool);
+        }
+        #endif
+        pool.waitIdle();
+#else
+        for (auto& m : scene) {
+            render(renderer, m, camera, L);
+        }
+#endif
+        renderer.present();
+    }
+
+    for (auto& m : scene)
+        delete m;
+
+    profiler.printReport("Scene 2");
+#if OPT_MULTITHREAD
+    pool.dumpStats();
+#endif
+}
+
+
 // Entry point of the application
 // No input variables
 int main() {
@@ -661,7 +896,7 @@ int main() {
         scene3();
     }
     else {
-        sceneTest();
+        scene4();
     }
 
     return 0;
