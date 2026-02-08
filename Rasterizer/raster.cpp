@@ -21,8 +21,35 @@
 #include "ThreadPool.h"
 
 #if OPT_MULTITHREAD
+
+#if OPT_FRUSTUM_CULLING
+float maxScaleFromMatrix(const matrix& m) {
+    float sx = std::sqrt(m(0, 0) * m(0, 0) + m(0, 1) * m(0, 1) + m(0, 2) * m(0, 2));
+    float sy = std::sqrt(m(1, 0) * m(1, 0) + m(1, 1) * m(1, 1) + m(1, 2) * m(1, 2));
+    float sz = std::sqrt(m(2, 0) * m(2, 0) + m(2, 1) * m(2, 1) + m(2, 2) * m(2, 2));
+    return std::max({ sx, sy, sz });
+}
+#endif
+
 void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPool& pool) {
+
+#if OPT_FRUSTUM_CULLING
+    vec4 boundsCenter;
+    float boundsRadius = 0.0f;
+    mesh->getBoundsSphere(boundsCenter, boundsRadius);
+    matrix view = camera * mesh->world;
+    vec4 centerView = view * boundsCenter;
+    float radiusView = boundsRadius * maxScaleFromMatrix(mesh->world);
+
+    if (!renderer.sphereInFrustumView(centerView, radiusView)) {
+        return;
+    }
+
+    matrix p = renderer.perspective * view;
+#else
     matrix p = renderer.perspective * camera * mesh->world;
+#endif
+
     const int W = (int)renderer.canvas.getWidth();
     const int H = (int)renderer.canvas.getHeight();
 
@@ -134,16 +161,29 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
     renderData->reserve(scene.size());
 
     for (auto* mesh : scene) {
+
+#if OPT_FRUSTUM_CULLING
+        vec4 boundsCenter;
+        float boundsRadius = 0.0f;
+        mesh->getBoundsSphere(boundsCenter, boundsRadius);
+        matrix view = camera * mesh->world;
+        vec4 centerView = view * boundsCenter;
+        float radiusView = boundsRadius * maxScaleFromMatrix(mesh->world);
+
+        if (!renderer.sphereInFrustumView(centerView, radiusView)) {
+            continue;
+        }
+        matrix p = renderer.perspective * view;
+#else
+        matrix p = renderer.perspective * camera * mesh->world;
+#endif
+
         MeshRenderData data;
         data.mesh = mesh;
         data.vCache = std::make_shared<VertexSOA>();
         data.lp = std::make_shared<avx2::LightSIMD>(L, mesh->ka, mesh->kd);
 
-        matrix p = renderer.perspective * camera * mesh->world;
-        {
-            Profiler::RegionTimer t("Vertex_Stage");
-            mesh->preProcessVertexCache(p, static_cast<float>(W), static_cast<float>(H), *data.vCache);
-        }
+        mesh->preProcessVertexCache(p, static_cast<float>(W), static_cast<float>(H), *data.vCache);
 
 #if OPT_TRI_BIN
         data.triangleBins = std::make_shared<std::vector<std::vector<int>>>(tilesX * tilesY);
@@ -600,196 +640,6 @@ void scene3() {
     ThreadPool pool(THREAD_COUNT);
 #endif
 
-    struct rRot { float x; float y; float z; };
-    struct RotMesh { Mesh* mesh; rRot rot; };
-
-    std::vector<Mesh*> scene;
-    std::vector<RotMesh> rotatingMeshes;
-    std::vector<Mesh*> orbitSpheres;
-    std::vector<Mesh*> layeredSlats;
-
-    RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
-
-    auto addRect = [&](float minX, float minY, float maxX, float maxY, float z) {
-        Mesh* rect = new Mesh();
-        *rect = Mesh::makeRectangle(minX, minY, maxX, maxY);
-        rect->world = matrix::makeTranslation(0.0f, 0.0f, z);
-        scene.push_back(rect);
-        return rect;
-        };
-
-    auto addCube = [&](float size, float x, float y, float z) {
-        Mesh* cube = new Mesh();
-        *cube = Mesh::makeCube(size);
-        cube->world = matrix::makeTranslation(x, y, z) * makeRandomRotation();
-        scene.push_back(cube);
-        rotatingMeshes.push_back({ cube, { rng.getRandomFloat(-.04f, .04f), rng.getRandomFloat(-.04f, .04f), rng.getRandomFloat(-.04f, .04f) } });
-        return cube;
-        };
-
-    auto addSphere = [&](float radius, int lat, int lon, float x, float y, float z) {
-        Mesh* s = new Mesh();
-        *s = Mesh::makeSphere(radius, lat, lon);
-        s->world = matrix::makeTranslation(x, y, z);
-        scene.push_back(s);
-        return s;
-        };
-
-    // Foreground occlusion frame (promotes layered/early-z benefits)
-    const float frameZ = -6.0f;
-    addRect(-8.0f, 2.5f, 8.0f, 6.5f, frameZ);
-    addRect(-8.0f, -6.5f, 8.0f, -2.5f, frameZ);
-    addRect(-8.0f, -2.5f, -3.5f, 2.5f, frameZ);
-    addRect(3.5f, -2.5f, 8.0f, 2.5f, frameZ);
-
-    // Layered slats behind the frame to generate depth layers for hierarchical rasterization
-    for (int layer = 0; layer < 4; layer++) {
-        float z = -10.0f - static_cast<float>(layer) * 6.0f;
-        for (int s = 0; s < 6; s++) {
-            float x0 = -7.5f + static_cast<float>(s) * 2.6f;
-            float x1 = x0 + 1.6f;
-            Mesh* slat = addRect(x0, -6.0f, x1, 6.0f, z);
-            layeredSlats.push_back(slat);
-        }
-    }
-
-    // Clustered cube fields (encourages triangle binning by spatial locality)
-    const vec4 clusterCenters[] = {
-        vec4(-5.0f, 3.5f, -24.0f, 1.0f),
-        vec4(5.0f, 3.5f, -24.0f, 1.0f),
-        vec4(-5.0f, -3.5f, -24.0f, 1.0f),
-        vec4(5.0f, -3.5f, -24.0f, 1.0f),
-        vec4(0.0f, 0.0f, -32.0f, 1.0f)
-    };
-
-    for (const auto& c : clusterCenters) {
-        for (int y = 0; y < 6; y++) {
-            for (int x = 0; x < 6; x++) {
-                float jitterX = rng.getRandomFloat(-0.15f, 0.15f);
-                float jitterY = rng.getRandomFloat(-0.15f, 0.15f);
-                float jitterZ = rng.getRandomFloat(-1.2f, 1.2f);
-                float px = c[0] + (static_cast<float>(x) * 0.7f) + jitterX;
-                float py = c[1] + (static_cast<float>(y) * 0.7f) + jitterY;
-                float pz = c[2] + jitterZ;
-                addCube(0.32f, px, py, pz);
-            }
-        }
-    }
-
-    // High-poly spheres to keep per-cluster triangle counts high but localized
-    for (int i = 0; i < 5; i++) {
-        float angle = static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f);
-        float px = std::cos(angle) * 4.2f;
-        float py = std::sin(angle) * 4.2f;
-        Mesh* sphere = addSphere(1.1f, 32, 64, px, py, -38.0f);
-        orbitSpheres.push_back(sphere);
-    }
-
-    // Fill-rate slabs (overdraw)
-    for (int i = 0; i < 3; i++) {
-        Mesh* slab = new Mesh();
-        *slab = Mesh::makeRectangle(-10.0f, -10.0f, 10.0f, 10.0f);
-        slab->world = matrix::makeTranslation(0.0f, 0.0f, -10.0f - static_cast<float>(i) * 2.0f);
-        scene.push_back(slab);
-    }
-
-    // Far micro-geometry layer (small triangles confined to tiles)
-    for (int y = 0; y < 12; y++) {
-        for (int x = 0; x < 12; x++) {
-            Mesh* shard = new Mesh();
-            *shard = Mesh::makeRectangle(-0.18f, -0.18f, 0.18f, 0.18f);
-            float px = -7.0f + static_cast<float>(x) * 1.2f + rng.getRandomFloat(-0.2f, 0.2f);
-            float py = -5.0f + static_cast<float>(y) * 1.0f + rng.getRandomFloat(-0.2f, 0.2f);
-            float pz = -55.0f + rng.getRandomFloat(-2.0f, 2.0f);
-            shard->world = matrix::makeTranslation(px, py, pz);
-            scene.push_back(shard);
-        }
-    }
-
-    float zoffset = 5.0f;
-    float zstep = -0.22f;
-    float t = 0.0f;
-
-    while (profiler.needToLoop()) {
-        auto frameTimer = profiler.scope();
-        renderer.canvas.checkInput();
-        renderer.clear();
-
-        t += 0.02f;
-        float camX = std::sin(t * 0.6f) * 2.2f;
-        float camY = std::cos(t * 0.4f) * 1.6f;
-        camera = matrix::makeTranslation(-camX, -camY, -zoffset);
-
-        zoffset += zstep;
-        if (zoffset < -60.0f || zoffset > 5.0f)
-            zstep *= -1.f;
-
-        // Rotate all rotating meshes
-        for (auto& rm : rotatingMeshes) {
-            rm.mesh->world = rm.mesh->world * matrix::makeRotateXYZ(rm.rot.x, rm.rot.y, rm.rot.z);
-        }
-
-        // Orbit spheres to keep depth changes active
-        float orbitScale = 1.0f + (std::sin(t * 1.2f) * 0.15f);
-        for (int i = 0; i < static_cast<int>(orbitSpheres.size()); i++) {
-            float angle = t * 0.7f + (static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f));
-            float orbitX = std::cos(angle) * 4.2f;
-            float orbitY = std::sin(angle) * 4.2f;
-            orbitSpheres[i]->world = matrix::makeTranslation(orbitX, orbitY, -38.0f)
-                * matrix::makeRotateXYZ(t * 0.25f, t * 0.35f, t * 0.2f)
-                * matrix::makeScale(orbitScale);
-        }
-
-        // Slight swaying of slats for depth-layer motion
-        for (int i = 0; i < static_cast<int>(layeredSlats.size()); i++) {
-            float sway = std::sin(t * 0.4f + static_cast<float>(i)) * 0.08f;
-            float z = -10.0f - (static_cast<float>(i / 6) * 6.0f);
-            layeredSlats[i]->world = matrix::makeTranslation(sway, 0.0f, z);
-        }
-
-        if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
-
-#if OPT_MULTITHREAD
-#if OPT_RENDER_SCENE
-        renderSceneMT(renderer, scene, camera, L, pool);
-#else
-        for (auto& m : scene) {
-            renderMT(renderer, m, camera, L, pool);
-        }
-#endif
-        pool.waitIdle();
-#else
-        for (auto& m : scene) {
-            render(renderer, m, camera, L);
-        }
-#endif
-
-        renderer.present();
-    }
-
-    for (auto& m : scene)
-        delete m;
-
-    profiler.printReport("Scene 3");
-#if OPT_MULTITHREAD
-    pool.dumpStats();
-#endif
-}
-
-
-void scene4() {
-    Profiler profiler;
-    Renderer renderer;
-    matrix camera = matrix::makeIdentity();
-    Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
-#if OPT_LIGHT_PRE_NORMALIZE
-    L.omega_i.normalise();
-#endif
-
-#if OPT_MULTITHREAD
-    ThreadPool pool(THREAD_COUNT);
-#endif
-
     std::vector<Mesh*> scene;
 
     struct rRot { float x; float y; float z; }; // Structure to store random rotation parameters
@@ -896,7 +746,7 @@ int main() {
         scene3();
     }
     else {
-        scene4();
+        sceneTest();
     }
 
     return 0;

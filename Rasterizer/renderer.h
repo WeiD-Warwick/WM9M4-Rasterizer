@@ -34,4 +34,28 @@ public:
     void present() {
         canvas.present(); // Display the rendered frame
     }
+
+    float getFov() const { return fov; }
+    float getAspect() const { return aspect; }
+    float getNear() const { return n; }
+    float getFar() const { return f; }
+
+    bool sphereInFrustumView(const vec4& centerView, float radius) const {
+        float depth = -centerView[2];
+        if (depth + radius < n || depth - radius > f) {
+            return false;
+        }
+
+        float tanHalfFov = std::tan(fov * 0.5f);
+        float halfV = depth * tanHalfFov;
+        float halfH = halfV * aspect;
+
+        if (centerView[0] - radius > halfH || centerView[0] + radius < -halfH) {
+            return false;
+        }
+        if (centerView[1] - radius > halfV || centerView[1] + radius < -halfV) {
+            return false;
+        }
+        return true;
+    }
 };

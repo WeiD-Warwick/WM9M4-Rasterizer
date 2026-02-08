@@ -21,6 +21,7 @@ public:
 
     // Access matrix elements by row and column
     float& operator()(unsigned int row, unsigned int col) { return m[row][col]; }
+    float operator()(unsigned int row, unsigned int col) const { return m[row][col]; }
 
 #if OPT_AVX_SIMD
     const float* data() const { return a; }

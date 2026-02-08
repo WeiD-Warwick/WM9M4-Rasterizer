@@ -9,6 +9,13 @@
 #include "AVX_SOA.h"
 #include "Macros.h"
 
+#if OPT_FRUSTUM_CULLING
+#include <limits>
+#include <algorithm>
+#include <cmath>
+#endif
+
+
 // Represents a vertex in a 3D mesh, including its position, normal, and color
 struct Vertex {
     vec4 p;         // Position of the vertex in 3D space
@@ -42,6 +49,16 @@ public:
     VertexSOA verticesSOA;
 #endif
 
+#if OPT_FRUSTUM_CULLING
+    void getBoundsSphere(vec4& center, float& radius) const {
+        if (boundsDirty) {
+            computeBounds();
+        }
+        center = boundsCenter;
+        radius = boundsRadius;
+    }
+#endif
+
     // Set the uniform color and reflection coefficients for the mesh
     // Input Variables:
     // - _c: Uniform color
@@ -57,6 +74,10 @@ public:
     Mesh() {
         col.set(1.0f, 1.0f, 1.0f);
         ka = kd = 0.75f;
+
+#if OPT_FRUSTUM_CULLING
+        boundsDirty = true;
+#endif
     }
 
     // Add a vertex and its normal to the mesh
@@ -79,6 +100,10 @@ public:
 #else
         Vertex v = { vertex, normal, col };
         vertices.push_back(v);
+#endif
+
+#if OPT_FRUSTUM_CULLING
+        boundsDirty = true;
 #endif
     }
 
@@ -296,4 +321,69 @@ public:
         }
         return mesh;
     }
+
+#if OPT_FRUSTUM_CULLING
+    private:
+        mutable bool boundsDirty = true;
+        mutable vec4 boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+        mutable float boundsRadius = 0.0f;
+
+        void computeBounds() const {
+#if OPT_AVX_SIMD
+            const int count = verticesSOA.size();
+            if (count == 0) {
+                boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+                boundsRadius = 0.0f;
+                boundsDirty = false;
+                return;
+            }
+
+            float minX = verticesSOA.p.x[0];
+            float minY = verticesSOA.p.y[0];
+            float minZ = verticesSOA.p.z[0];
+            float maxX = verticesSOA.p.x[0];
+            float maxY = verticesSOA.p.y[0];
+            float maxZ = verticesSOA.p.z[0];
+
+            for (int i = 1; i < count; ++i) {
+                minX = std::min(minX, verticesSOA.p.x[i]);
+                minY = std::min(minY, verticesSOA.p.y[i]);
+                minZ = std::min(minZ, verticesSOA.p.z[i]);
+                maxX = std::max(maxX, verticesSOA.p.x[i]);
+                maxY = std::max(maxY, verticesSOA.p.y[i]);
+                maxZ = std::max(maxZ, verticesSOA.p.z[i]);
+            }
+#else
+            if (vertices.empty()) {
+                boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+                boundsRadius = 0.0f;
+                boundsDirty = false;
+                return;
+            }
+
+            float minX = vertices[0].p[0];
+            float minY = vertices[0].p[1];
+            float minZ = vertices[0].p[2];
+            float maxX = vertices[0].p[0];
+            float maxY = vertices[0].p[1];
+            float maxZ = vertices[0].p[2];
+
+            for (size_t i = 1; i < vertices.size(); ++i) {
+                minX = std::min(minX, vertices[i].p[0]);
+                minY = std::min(minY, vertices[i].p[1]);
+                minZ = std::min(minZ, vertices[i].p[2]);
+                maxX = std::max(maxX, vertices[i].p[0]);
+                maxY = std::max(maxY, vertices[i].p[1]);
+                maxZ = std::max(maxZ, vertices[i].p[2]);
+            }
+#endif
+
+            boundsCenter = vec4((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f, 1.f);
+            float dx = maxX - boundsCenter[0];
+            float dy = maxY - boundsCenter[1];
+            float dz = maxZ - boundsCenter[2];
+            boundsRadius = std::sqrt(dx * dx + dy * dy + dz * dz);
+            boundsDirty = false;
+        }
+#endif
 };
