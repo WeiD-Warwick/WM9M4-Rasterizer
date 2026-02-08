@@ -415,7 +415,7 @@ void scene3() {
     Renderer renderer;
     matrix camera = matrix::makeIdentity();
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
-#if OPT_LIGHT_PRENORMALIZE
+#if OPT_LIGHT_PRE_NORMALIZE
     L.omega_i.normalise();
 #endif
 
@@ -428,62 +428,84 @@ void scene3() {
 
     std::vector<Mesh*> scene;
     std::vector<RotMesh> rotatingMeshes;
-    std::vector<Mesh*> ringSpheres;
+    std::vector<Mesh*> orbitSpheres;
+    std::vector<Mesh*> layeredSlats;
 
     RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
 
-    // Scene1-like corridor of rotating cubes
-    for (unsigned int i = 0; i < 24; i++) {
-        Mesh* left = new Mesh();
-        *left = Mesh::makeCube(0.8f);
-        left->world = matrix::makeTranslation(-2.5f, 0.0f, (-3.0f * static_cast<float>(i) - 6.0f)) * makeRandomRotation();
-        scene.push_back(left);
-        rotatingMeshes.push_back({ left, { rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f) } });
+    auto addRect = [&](float minX, float minY, float maxX, float maxY, float z) {
+        Mesh* rect = new Mesh();
+        *rect = Mesh::makeRectangle(minX, minY, maxX, maxY);
+        rect->world = matrix::makeTranslation(0.0f, 0.0f, z);
+        scene.push_back(rect);
+        return rect;
+        };
 
-        Mesh* right = new Mesh();
-        *right = Mesh::makeCube(0.8f);
-        right->world = matrix::makeTranslation(2.5f, 0.0f, (-3.0f * static_cast<float>(i) - 6.0f)) * makeRandomRotation();
-        scene.push_back(right);
-        rotatingMeshes.push_back({ right, { rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f) } });
-    }
+    auto addCube = [&](float size, float x, float y, float z) {
+        Mesh* cube = new Mesh();
+        *cube = Mesh::makeCube(size);
+        cube->world = matrix::makeTranslation(x, y, z) * makeRandomRotation();
+        scene.push_back(cube);
+        rotatingMeshes.push_back({ cube, { rng.getRandomFloat(-.04f, .04f), rng.getRandomFloat(-.04f, .04f), rng.getRandomFloat(-.04f, .04f) } });
+        return cube;
+        };
 
-    // Scene2-like grid of rotating cubes
-    for (unsigned int y = 0; y < 6; y++) {
-        for (unsigned int x = 0; x < 8; x++) {
-            Mesh* m = new Mesh();
-            *m = Mesh::makeCube(1.f);
-            m->world = matrix::makeTranslation(-7.0f + (static_cast<float>(x) * 2.f), 5.0f - (static_cast<float>(y) * 2.f), -18.f);
-            scene.push_back(m);
-            rotatingMeshes.push_back({ m, { rng.getRandomFloat(-.06f, .06f), rng.getRandomFloat(-.06f, .06f), rng.getRandomFloat(-.06f, .06f) } });
-        }
-    }
-
-    // Far cube grid layer for vertex throughput stress
-    const float farGridZ = -70.0f;
-    for (unsigned int y = 0; y < 20; y++) {
-        for (unsigned int x = 0; x < 20; x++) {
-            Mesh* m = new Mesh();
-            *m = Mesh::makeCube(0.6f);
-            m->world = matrix::makeTranslation(-11.0f + (static_cast<float>(x) * 1.1f), 11.0f - (static_cast<float>(y) * 1.1f), farGridZ);
-            scene.push_back(m);
-            rotatingMeshes.push_back({ m, { rng.getRandomFloat(-.02f, .02f), rng.getRandomFloat(-.02f, .02f), rng.getRandomFloat(-.02f, .02f) } });
-        }
-    }
-
-    // Moving sphere (Scene2 test point)
-    Mesh* movingSphere = new Mesh();
-    *movingSphere = Mesh::makeSphere(1.1f, 20, 40);
-    scene.push_back(movingSphere);
-    float sphereOffset = -6.f;
-    float sphereStep = 0.12f;
-    movingSphere->world = matrix::makeTranslation(sphereOffset, 0.f, -12.f);
-
-    // Ring of 5 high-res spheres (mid-range)
-    for (int i = 0; i < 5; i++) {
+    auto addSphere = [&](float radius, int lat, int lon, float x, float y, float z) {
         Mesh* s = new Mesh();
-        *s = Mesh::makeSphere(1.0f, 28, 56);
+        *s = Mesh::makeSphere(radius, lat, lon);
+        s->world = matrix::makeTranslation(x, y, z);
         scene.push_back(s);
-        ringSpheres.push_back(s);
+        return s;
+        };
+
+    // Foreground occlusion frame (promotes layered/early-z benefits)
+    const float frameZ = -6.0f;
+    addRect(-8.0f, 2.5f, 8.0f, 6.5f, frameZ);
+    addRect(-8.0f, -6.5f, 8.0f, -2.5f, frameZ);
+    addRect(-8.0f, -2.5f, -3.5f, 2.5f, frameZ);
+    addRect(3.5f, -2.5f, 8.0f, 2.5f, frameZ);
+
+    // Layered slats behind the frame to generate depth layers for hierarchical rasterization
+    for (int layer = 0; layer < 4; layer++) {
+        float z = -10.0f - static_cast<float>(layer) * 6.0f;
+        for (int s = 0; s < 6; s++) {
+            float x0 = -7.5f + static_cast<float>(s) * 2.6f;
+            float x1 = x0 + 1.6f;
+            Mesh* slat = addRect(x0, -6.0f, x1, 6.0f, z);
+            layeredSlats.push_back(slat);
+        }
+    }
+
+    // Clustered cube fields (encourages triangle binning by spatial locality)
+    const vec4 clusterCenters[] = {
+        vec4(-5.0f, 3.5f, -24.0f, 1.0f),
+        vec4(5.0f, 3.5f, -24.0f, 1.0f),
+        vec4(-5.0f, -3.5f, -24.0f, 1.0f),
+        vec4(5.0f, -3.5f, -24.0f, 1.0f),
+        vec4(0.0f, 0.0f, -32.0f, 1.0f)
+    };
+
+    for (const auto& c : clusterCenters) {
+        for (int y = 0; y < 6; y++) {
+            for (int x = 0; x < 6; x++) {
+                float jitterX = rng.getRandomFloat(-0.15f, 0.15f);
+                float jitterY = rng.getRandomFloat(-0.15f, 0.15f);
+                float jitterZ = rng.getRandomFloat(-1.2f, 1.2f);
+                float px = c[0] + (static_cast<float>(x) * 0.7f) + jitterX;
+                float py = c[1] + (static_cast<float>(y) * 0.7f) + jitterY;
+                float pz = c[2] + jitterZ;
+                addCube(0.32f, px, py, pz);
+            }
+        }
+    }
+
+    // High-poly spheres to keep per-cluster triangle counts high but localized
+    for (int i = 0; i < 5; i++) {
+        float angle = static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f);
+        float px = std::cos(angle) * 4.2f;
+        float py = std::sin(angle) * 4.2f;
+        Mesh* sphere = addSphere(1.1f, 32, 64, px, py, -38.0f);
+        orbitSpheres.push_back(sphere);
     }
 
     // Fill-rate slabs (overdraw)
@@ -494,25 +516,21 @@ void scene3() {
         scene.push_back(slab);
     }
 
-    // Near rectangle for occlusion (camera passes through)
-    Mesh* nearRect = new Mesh();
-    *nearRect = Mesh::makeRectangle(-0.9f, -0.9f, 0.9f, 0.9f);
-    nearRect->world = matrix::makeTranslation(0.0f, 0.0f, -3.0f);
-    scene.push_back(nearRect);
-
-    // Extra tiny rectangles to stress thread-pool scheduling/lock contention
-    for (int i = 0; i < 200; i++) {
-        Mesh* shard = new Mesh();
-        *shard = Mesh::makeRectangle(-0.2f, -0.2f, 0.2f, 0.2f);
-        float x = rng.getRandomFloat(-6.0f, 6.0f);
-        float y = rng.getRandomFloat(-4.0f, 4.0f);
-        float z = rng.getRandomFloat(-25.0f, -8.0f);
-        shard->world = matrix::makeTranslation(x, y, z);
-        scene.push_back(shard);
+    // Far micro-geometry layer (small triangles confined to tiles)
+    for (int y = 0; y < 12; y++) {
+        for (int x = 0; x < 12; x++) {
+            Mesh* shard = new Mesh();
+            *shard = Mesh::makeRectangle(-0.18f, -0.18f, 0.18f, 0.18f);
+            float px = -7.0f + static_cast<float>(x) * 1.2f + rng.getRandomFloat(-0.2f, 0.2f);
+            float py = -5.0f + static_cast<float>(y) * 1.0f + rng.getRandomFloat(-0.2f, 0.2f);
+            float pz = -55.0f + rng.getRandomFloat(-2.0f, 2.0f);
+            shard->world = matrix::makeTranslation(px, py, pz);
+            scene.push_back(shard);
+        }
     }
 
-    float zoffset = 4.0f;
-    float zstep = -0.25f;
+    float zoffset = 5.0f;
+    float zstep = -0.22f;
     float t = 0.0f;
 
     while (profiler.needToLoop()) {
@@ -526,7 +544,7 @@ void scene3() {
         camera = matrix::makeTranslation(-camX, -camY, -zoffset);
 
         zoffset += zstep;
-        if (zoffset < -70.0f || zoffset > 4.0f)
+        if (zoffset < -60.0f || zoffset > 5.0f)
             zstep *= -1.f;
 
         // Rotate all rotating meshes
@@ -534,20 +552,22 @@ void scene3() {
             rm.mesh->world = rm.mesh->world * matrix::makeRotateXYZ(rm.rot.x, rm.rot.y, rm.rot.z);
         }
 
-        // Move the scene2 sphere
-        sphereOffset += sphereStep;
-        movingSphere->world = matrix::makeTranslation(sphereOffset, 0.f, -12.f);
-        if (sphereOffset > 6.0f || sphereOffset < -6.0f) {
-            sphereStep *= -1.f;
+        // Orbit spheres to keep depth changes active
+        float orbitScale = 1.0f + (std::sin(t * 1.2f) * 0.15f);
+        for (int i = 0; i < static_cast<int>(orbitSpheres.size()); i++) {
+            float angle = t * 0.7f + (static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f));
+            float orbitX = std::cos(angle) * 4.2f;
+            float orbitY = std::sin(angle) * 4.2f;
+            orbitSpheres[i]->world = matrix::makeTranslation(orbitX, orbitY, -38.0f)
+                * matrix::makeRotateXYZ(t * 0.25f, t * 0.35f, t * 0.2f)
+                * matrix::makeScale(orbitScale);
         }
 
-        // Ring sphere rotation + breathing scale
-        float ringScale = 1.0f + (std::sin(t * 1.4f) * 0.18f);
-        for (int i = 0; i < static_cast<int>(ringSpheres.size()); i++) {
-            float angle = t * 0.6f + (static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f));
-            float ringX = std::cos(angle) * 4.5f;
-            float ringY = std::sin(angle) * 4.5f;
-            ringSpheres[i]->world = matrix::makeTranslation(ringX, ringY, -20.0f) * matrix::makeScale(ringScale);
+        // Slight swaying of slats for depth-layer motion
+        for (int i = 0; i < static_cast<int>(layeredSlats.size()); i++) {
+            float sway = std::sin(t * 0.4f + static_cast<float>(i)) * 0.08f;
+            float z = -10.0f - (static_cast<float>(i / 6) * 6.0f);
+            layeredSlats[i]->world = matrix::makeTranslation(sway, 0.0f, z);
         }
 
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;

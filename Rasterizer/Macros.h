@@ -41,4 +41,4 @@
 #define TARGET_TOTAL_LOOPS			23000
 #define WARMUP_LOOPS				3000
 
-#define SCENE_SELECT				1
+#define SCENE_SELECT				3
