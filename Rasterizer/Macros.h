@@ -4,7 +4,7 @@
 #define OPT_VERTEX_CACHE			1	// Cache transformed vertices to avoid redundant calculations
 
 // ===== Pipeline Optimisations =====
-#define OPT_LIGHT_PRENORMALIZE		1	// Pre-normalize light direction before per-pixel lighting calculations
+#define OPT_LIGHT_PRE_NORMALIZE		1	// Pre-normalize light direction before per-pixel lighting calculations
 #define OPT_EARLY_Z_TEST			1	// Enable early Z-test to discard occluded fragments before shading
 #define OPT_BACKFACE_CULLING        1	// Enable backface culling to skip rendering of back-facing triangles
 #define OPT_INV_AREA				1	// Use inverse area for barycentric coordinate calculations
@@ -17,9 +17,26 @@
 #define OPT_MULTITHREAD				1	// Enable multithreading support
 
 // ===== Variable Definitions =====
-#define MT_TILE_W 256
-#define MT_TILE_H 256
-#define THREAD_COUNT 12
+// 1024 768
+// 
+// Scene 1
+// thread 1(1024 768)  1071
+// thread 2(512  768)  1330
+// thread 4(512  384)  1527
+// thread 6(512  256)  1321
+// thread 8(256 384)   1191
+// 
+// Scene 2
+// thread 1(1024 768)  580
+// thread 2 (512 768)  835
+// thread 4 (512 384)  1075
+// thread 6 (512 256)  1064
+// thread 8 (256 384)  1013
+// thread 12(256 256)  1030
+
+#define MT_TILE_W 512
+#define MT_TILE_H 384
+#define THREAD_COUNT 4
 #define MT_MAX_THREADS				22
 #define TARGET_TOTAL_LOOPS			23000
 #define WARMUP_LOOPS				3000

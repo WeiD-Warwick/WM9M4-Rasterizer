@@ -149,7 +149,7 @@ void sceneTest() {
     Renderer renderer;
     // create light source {direction, diffuse intensity, ambient intensity}
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
-    #if OPT_LIGHT_PRENORMALIZE
+    #if OPT_LIGHT_PRE_NORMALIZE
     L.omega_i.normalise();
     #endif
 
@@ -231,7 +231,7 @@ void scene1() {
     Renderer renderer;
     matrix camera;
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
-#if OPT_LIGHT_PRENORMALIZE
+#if OPT_LIGHT_PRE_NORMALIZE
     L.omega_i.normalise();
 #endif
 
@@ -303,7 +303,9 @@ void scene1() {
         delete m;
 
 	profiler.printReport("Scene 1");
+#if OPT_MULTITHREAD
     pool.dumpStats();
+#endif
 }
 
 // Scene with a grid of cubes and a moving sphere
@@ -313,7 +315,7 @@ void scene2() {
     Renderer renderer;
     matrix camera = matrix::makeIdentity();
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
-#if OPT_LIGHT_PRENORMALIZE
+#if OPT_LIGHT_PRE_NORMALIZE
     L.omega_i.normalise();
 #endif
 
@@ -352,6 +354,10 @@ void scene2() {
     std::chrono::time_point<std::chrono::high_resolution_clock> end;
     int cycle = 0;
 
+    const bool reportCycleTiming = true;
+    auto cycleStart = std::chrono::high_resolution_clock::now();
+    std::chrono::time_point<std::chrono::high_resolution_clock> cycleEnd;
+
     bool running = true;
     while (profiler.needToLoop()) {
         auto frameTimer = profiler.scope();
@@ -371,7 +377,177 @@ void scene2() {
                 //end = std::chrono::high_resolution_clock::now();
                 //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
                 //start = std::chrono::high_resolution_clock::now();
+
+                if (reportCycleTiming) {
+                    cycleEnd = std::chrono::high_resolution_clock::now();
+                    Profiler::recordRegion("Scene2 Cycle", std::chrono::duration<double, std::milli>(cycleEnd - cycleStart).count());
+                    cycleStart = cycleEnd;
+                }
             }
+        }
+
+        if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
+
+#if OPT_MULTITHREAD
+        for (auto& m : scene) {
+            renderMT(renderer, m, camera, L, pool);
+        }
+        pool.waitIdle();
+#else
+        for (auto& m : scene) {
+            render(renderer, m, camera, L);
+        }
+#endif
+        renderer.present();
+    }
+
+    for (auto& m : scene)
+        delete m;
+
+	profiler.printReport("Scene 2");
+#if OPT_MULTITHREAD
+	pool.dumpStats();
+#endif
+}
+
+void scene3() {
+    Profiler profiler;
+    Renderer renderer;
+    matrix camera = matrix::makeIdentity();
+    Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.2f, 0.2f, 0.2f) };
+#if OPT_LIGHT_PRENORMALIZE
+    L.omega_i.normalise();
+#endif
+
+#if OPT_MULTITHREAD
+    ThreadPool pool(THREAD_COUNT);
+#endif
+
+    struct rRot { float x; float y; float z; };
+    struct RotMesh { Mesh* mesh; rRot rot; };
+
+    std::vector<Mesh*> scene;
+    std::vector<RotMesh> rotatingMeshes;
+    std::vector<Mesh*> ringSpheres;
+
+    RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
+
+    // Scene1-like corridor of rotating cubes
+    for (unsigned int i = 0; i < 24; i++) {
+        Mesh* left = new Mesh();
+        *left = Mesh::makeCube(0.8f);
+        left->world = matrix::makeTranslation(-2.5f, 0.0f, (-3.0f * static_cast<float>(i) - 6.0f)) * makeRandomRotation();
+        scene.push_back(left);
+        rotatingMeshes.push_back({ left, { rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f) } });
+
+        Mesh* right = new Mesh();
+        *right = Mesh::makeCube(0.8f);
+        right->world = matrix::makeTranslation(2.5f, 0.0f, (-3.0f * static_cast<float>(i) - 6.0f)) * makeRandomRotation();
+        scene.push_back(right);
+        rotatingMeshes.push_back({ right, { rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f), rng.getRandomFloat(-.03f, .03f) } });
+    }
+
+    // Scene2-like grid of rotating cubes
+    for (unsigned int y = 0; y < 6; y++) {
+        for (unsigned int x = 0; x < 8; x++) {
+            Mesh* m = new Mesh();
+            *m = Mesh::makeCube(1.f);
+            m->world = matrix::makeTranslation(-7.0f + (static_cast<float>(x) * 2.f), 5.0f - (static_cast<float>(y) * 2.f), -18.f);
+            scene.push_back(m);
+            rotatingMeshes.push_back({ m, { rng.getRandomFloat(-.06f, .06f), rng.getRandomFloat(-.06f, .06f), rng.getRandomFloat(-.06f, .06f) } });
+        }
+    }
+
+    // Far cube grid layer for vertex throughput stress
+    const float farGridZ = -70.0f;
+    for (unsigned int y = 0; y < 20; y++) {
+        for (unsigned int x = 0; x < 20; x++) {
+            Mesh* m = new Mesh();
+            *m = Mesh::makeCube(0.6f);
+            m->world = matrix::makeTranslation(-11.0f + (static_cast<float>(x) * 1.1f), 11.0f - (static_cast<float>(y) * 1.1f), farGridZ);
+            scene.push_back(m);
+            rotatingMeshes.push_back({ m, { rng.getRandomFloat(-.02f, .02f), rng.getRandomFloat(-.02f, .02f), rng.getRandomFloat(-.02f, .02f) } });
+        }
+    }
+
+    // Moving sphere (Scene2 test point)
+    Mesh* movingSphere = new Mesh();
+    *movingSphere = Mesh::makeSphere(1.1f, 20, 40);
+    scene.push_back(movingSphere);
+    float sphereOffset = -6.f;
+    float sphereStep = 0.12f;
+    movingSphere->world = matrix::makeTranslation(sphereOffset, 0.f, -12.f);
+
+    // Ring of 5 high-res spheres (mid-range)
+    for (int i = 0; i < 5; i++) {
+        Mesh* s = new Mesh();
+        *s = Mesh::makeSphere(1.0f, 28, 56);
+        scene.push_back(s);
+        ringSpheres.push_back(s);
+    }
+
+    // Fill-rate slabs (overdraw)
+    for (int i = 0; i < 3; i++) {
+        Mesh* slab = new Mesh();
+        *slab = Mesh::makeRectangle(-10.0f, -10.0f, 10.0f, 10.0f);
+        slab->world = matrix::makeTranslation(0.0f, 0.0f, -10.0f - static_cast<float>(i) * 2.0f);
+        scene.push_back(slab);
+    }
+
+    // Near rectangle for occlusion (camera passes through)
+    Mesh* nearRect = new Mesh();
+    *nearRect = Mesh::makeRectangle(-0.9f, -0.9f, 0.9f, 0.9f);
+    nearRect->world = matrix::makeTranslation(0.0f, 0.0f, -3.0f);
+    scene.push_back(nearRect);
+
+    // Extra tiny rectangles to stress thread-pool scheduling/lock contention
+    for (int i = 0; i < 200; i++) {
+        Mesh* shard = new Mesh();
+        *shard = Mesh::makeRectangle(-0.2f, -0.2f, 0.2f, 0.2f);
+        float x = rng.getRandomFloat(-6.0f, 6.0f);
+        float y = rng.getRandomFloat(-4.0f, 4.0f);
+        float z = rng.getRandomFloat(-25.0f, -8.0f);
+        shard->world = matrix::makeTranslation(x, y, z);
+        scene.push_back(shard);
+    }
+
+    float zoffset = 4.0f;
+    float zstep = -0.25f;
+    float t = 0.0f;
+
+    while (profiler.needToLoop()) {
+        auto frameTimer = profiler.scope();
+        renderer.canvas.checkInput();
+        renderer.clear();
+
+        t += 0.02f;
+        float camX = std::sin(t * 0.6f) * 2.2f;
+        float camY = std::cos(t * 0.4f) * 1.6f;
+        camera = matrix::makeTranslation(-camX, -camY, -zoffset);
+
+        zoffset += zstep;
+        if (zoffset < -70.0f || zoffset > 4.0f)
+            zstep *= -1.f;
+
+        // Rotate all rotating meshes
+        for (auto& rm : rotatingMeshes) {
+            rm.mesh->world = rm.mesh->world * matrix::makeRotateXYZ(rm.rot.x, rm.rot.y, rm.rot.z);
+        }
+
+        // Move the scene2 sphere
+        sphereOffset += sphereStep;
+        movingSphere->world = matrix::makeTranslation(sphereOffset, 0.f, -12.f);
+        if (sphereOffset > 6.0f || sphereOffset < -6.0f) {
+            sphereStep *= -1.f;
+        }
+
+        // Ring sphere rotation + breathing scale
+        float ringScale = 1.0f + (std::sin(t * 1.4f) * 0.18f);
+        for (int i = 0; i < static_cast<int>(ringSpheres.size()); i++) {
+            float angle = t * 0.6f + (static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 5.0f));
+            float ringX = std::cos(angle) * 4.5f;
+            float ringY = std::sin(angle) * 4.5f;
+            ringSpheres[i]->world = matrix::makeTranslation(ringX, ringY, -20.0f) * matrix::makeScale(ringScale);
         }
 
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
@@ -393,11 +569,12 @@ void scene2() {
     for (auto& m : scene)
         delete m;
 
-	profiler.printReport("Scene 2");
+    profiler.printReport("Scene 3");
 #if OPT_MULTITHREAD
-	pool.dumpStats();
+    pool.dumpStats();
 #endif
 }
+
 
 // Entry point of the application
 // No input variables
@@ -408,6 +585,9 @@ int main() {
     }
     else if (SCENE_SELECT == 2) {
         scene2();
+    }
+    else if (SCENE_SELECT == 3) {
+        scene3();
     }
     else {
         sceneTest();

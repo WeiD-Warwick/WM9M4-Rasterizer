@@ -278,7 +278,7 @@ public:
                     if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
                         // typical shader begin
                         
-                        #if !OPT_LIGHT_PRENORMALIZE
+                        #if !OPT_LIGHT_PRE_NORMALIZE
                         L.omega_i.normalise();
                         #endif
 
@@ -340,7 +340,7 @@ public:
                     if (renderer.zbuffer(x, y) > depth && depth > 0.001f) {
                         // typical shader begin
 
-                        #if !OPT_LIGHT_PRENORMALIZE
+                        #if !OPT_LIGHT_PRE_NORMALIZE
                         L.omega_i.normalise();
                         #endif
 

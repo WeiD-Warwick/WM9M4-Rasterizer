@@ -1,11 +1,14 @@
 #include <atomic>
-#include <condition_variable>
+#include <algorithm>
+#include <cfloat>
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <queue>
 #include <thread>
 #include <vector>
+#include <iostream>
 
 struct ThreadStats {
     int taskCount = 0;
@@ -73,21 +76,22 @@ public:
     void submitBatch(std::vector<Job>& jobs) {
         if (jobs.empty()) return;
 
-        jobCount.fetch_add(jobs.size(), std::memory_order_relaxed);
+        auto batch = std::make_shared<JobBatch>(std::move(jobs));
+        jobCount.fetch_add(batch->size, std::memory_order_relaxed);
 
         {
             std::lock_guard<std::mutex> lock(mtx);
-            for (auto& j : jobs) {
-                q.push(std::move(j));
-            }
+            batches.push(std::move(batch));
         }
         wake.fetch_add(1, std::memory_order_release);
         wake.notify_all();
     }
 
     void waitIdle() {
-        while (jobCount.load(std::memory_order_acquire) != 0) {
-            std::this_thread::yield();
+        auto remaining = jobCount.load(std::memory_order_acquire);
+        while (remaining != 0) {
+            jobCount.wait(remaining, std::memory_order_relaxed);
+            remaining = jobCount.load(std::memory_order_acquire);
         }
     }
 
@@ -128,10 +132,11 @@ public:
 private:
     void workerLoop(int index, std::stop_token st) {
         ThreadStats& localStats = stats[index];
+        std::shared_ptr<JobBatch> localBatch;
 
         while (!st.stop_requested()) {
             Job job;
-            if (tryPop(job)) {
+            if (tryGetJob(localBatch, job)) {
                 TaskTimer timer(localStats);
                 job();
                 onJobFinished();
@@ -150,18 +155,48 @@ private:
         }
     }
 
-    bool tryPop(Job& out) {
-        std::lock_guard<std::mutex> lock(mtx);
-        if (q.empty()) return false;
-        out = std::move(q.front());
-        q.pop();
-        return true;
+    struct JobBatch {
+        explicit JobBatch(std::vector<Job>&& inJobs)
+            : jobs(std::move(inJobs)), size(jobs.size()) {
+        }
+
+        std::vector<Job> jobs;
+        std::atomic<size_t> next{ 0 };
+        size_t size = 0;
+    };
+
+    bool tryGetJob(std::shared_ptr<JobBatch>& localBatch, Job& out) {
+        while (true) {
+            if (localBatch) {
+                const size_t idx = localBatch->next.fetch_add(1, std::memory_order_acq_rel);
+                if (idx < localBatch->size) {
+                    out = std::move(localBatch->jobs[idx]);
+                    return true;
+                }
+                localBatch.reset();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                while (!batches.empty()) {
+                    const auto& candidate = batches.front();
+                    if (candidate->next.load(std::memory_order_acquire) >= candidate->size) {
+                        batches.pop();
+                        continue;
+                    }
+                    localBatch = candidate;
+                    break;
+                }
+            }
+
+            if (!localBatch) return false;
+        }
     }
 
     bool hasWork() {
         if (jobCount.load(std::memory_order_acquire) == 0) return false;
         std::lock_guard<std::mutex> lock(mtx);
-        return !q.empty();
+        return !batches.empty();
     }
 
     void onJobFinished() {
@@ -169,12 +204,13 @@ private:
         if (remaining == 0) {
             wake.fetch_add(1, std::memory_order_acq_rel);
             wake.notify_all();
+            jobCount.notify_all();
         }
     }
 
 private:
     std::mutex mtx;
-    std::queue<Job> q;
+    std::queue<std::shared_ptr<JobBatch>> batches;
 
     std::vector<std::jthread> workers;
 
