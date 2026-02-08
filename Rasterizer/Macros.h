@@ -2,6 +2,7 @@
 
 // ===== Transform Optimisations =====
 #define OPT_VERTEX_CACHE			1	// Cache transformed vertices to avoid redundant calculations
+#define OPT_TRI_BIN					1
 
 // ===== Pipeline Optimisations =====
 #define OPT_LIGHT_PRE_NORMALIZE		1	// Pre-normalize light direction before per-pixel lighting calculations
@@ -33,12 +34,21 @@
 // thread 6 (512 256)  1064
 // thread 8 (256 384)  1013
 // thread 12(256 256)  1030
+//
+// Scene 3
+// thread 1(1024 768)  257
+// thread 2 (512 768)  371
+// thread 4 (512 384)  438
+// thread 6 (512 256)  359
+// thread 8 (256 384)  302
+// thread 12(256 256)  176
+
 
 #define MT_TILE_W 512
 #define MT_TILE_H 384
 #define THREAD_COUNT 4
 #define MT_MAX_THREADS				22
-#define TARGET_TOTAL_LOOPS			23000
-#define WARMUP_LOOPS				3000
+#define TARGET_TOTAL_LOOPS			35000
+#define WARMUP_LOOPS				5000
 
-#define SCENE_SELECT				3
+#define SCENE_SELECT				2
