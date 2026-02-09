@@ -5,6 +5,8 @@
 #include "GamesEngineeringBase.h" // Include the GamesEngineeringBase header
 #include <algorithm>
 #include <chrono>
+#include <memory>
+#include <thread>
 
 #include "matrix.h"
 #include "colour.h"
@@ -30,7 +32,167 @@ float maxScaleFromMatrix(const matrix& m) {
 }
 #endif
 
-void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPool& pool) {
+struct AdaptiveMTConfig {
+    int tileW = MT_TILE_W;
+    int tileH = MT_TILE_H;
+    int threadCount = THREAD_COUNT;
+};
+
+struct WorkloadStats {
+    int totalTriangles = 0;
+    int visibleTriangles = 0;
+    float imbalance = 1.0f;
+    float occupancy = 0.0f;
+};
+
+struct WorkloadAccumulator {
+    int gridX = 6;
+    int gridY = 4;
+    int totalTriangles = 0;
+    int visibleTriangles = 0;
+    std::vector<int> bins;
+};
+
+struct AdaptiveHistory {
+    bool initialized = false;
+    float avgTriangles = 0.0f;
+    float avgVisible = 0.0f;
+    float avgImbalance = 1.0f;
+    float avgOccupancy = 0.0f;
+};
+
+WorkloadAccumulator makeAccumulator(int gridX, int gridY) {
+    WorkloadAccumulator acc;
+    acc.gridX = gridX;
+    acc.gridY = gridY;
+    acc.bins.assign(gridX * gridY, 0);
+    return acc;
+}
+
+void accumulateWorkload(const Renderer& renderer,
+    const VertexSOA& vCache,
+    const std::vector<triIndices>& triangles,
+    WorkloadAccumulator& acc) {
+    const int W = static_cast<int>(renderer.canvas.getWidth());
+    const int H = static_cast<int>(renderer.canvas.getHeight());
+    const float cellW = static_cast<float>(W) / static_cast<float>(acc.gridX);
+    const float cellH = static_cast<float>(H) / static_cast<float>(acc.gridY);
+
+    acc.totalTriangles += static_cast<int>(triangles.size());
+
+    for (const auto& ind : triangles) {
+        if (std::fabs(vCache.p.z[ind.v[0]]) > 1.0f || std::fabs(vCache.p.z[ind.v[1]]) > 1.0f || std::fabs(vCache.p.z[ind.v[2]]) > 1.0f) {
+            continue;
+        }
+
+        const float cx = (vCache.p.x[ind.v[0]] + vCache.p.x[ind.v[1]] + vCache.p.x[ind.v[2]]) * (1.0f / 3.0f);
+        const float cy = (vCache.p.y[ind.v[0]] + vCache.p.y[ind.v[1]] + vCache.p.y[ind.v[2]]) * (1.0f / 3.0f);
+        const int gx = std::clamp(static_cast<int>(cx / cellW), 0, acc.gridX - 1);
+        const int gy = std::clamp(static_cast<int>(cy / cellH), 0, acc.gridY - 1);
+
+        acc.bins[gx + gy * acc.gridX] += 1;
+        acc.visibleTriangles += 1;
+    }
+}
+
+WorkloadStats finalizeWorkload(const WorkloadAccumulator& acc) {
+    WorkloadStats stats;
+    stats.totalTriangles = acc.totalTriangles;
+    stats.visibleTriangles = acc.visibleTriangles;
+
+    const int cellCount = acc.gridX * acc.gridY;
+    if (cellCount == 0 || acc.visibleTriangles == 0) {
+        stats.imbalance = 1.0f;
+        stats.occupancy = 0.0f;
+        return stats;
+    }
+
+    int maxCell = 0;
+    int occupied = 0;
+    for (int count : acc.bins) {
+        if (count > 0) {
+            occupied += 1;
+            maxCell = std::max(maxCell, count);
+        }
+    }
+
+    const float avg = static_cast<float>(acc.visibleTriangles) / static_cast<float>(cellCount);
+    stats.imbalance = avg > 0.0f ? static_cast<float>(maxCell) / avg : 1.0f;
+    stats.occupancy = static_cast<float>(occupied) / static_cast<float>(cellCount);
+    return stats;
+}
+
+void updateHistory(AdaptiveHistory& history, const WorkloadStats& stats) {
+    const float alpha = 0.2f;
+    if (!history.initialized) {
+        history.avgTriangles = static_cast<float>(stats.totalTriangles);
+        history.avgVisible = static_cast<float>(stats.visibleTriangles);
+        history.avgImbalance = stats.imbalance;
+        history.avgOccupancy = stats.occupancy;
+        history.initialized = true;
+        return;
+    }
+
+    history.avgTriangles = history.avgTriangles * (1.0f - alpha) + static_cast<float>(stats.totalTriangles) * alpha;
+    history.avgVisible = history.avgVisible * (1.0f - alpha) + static_cast<float>(stats.visibleTriangles) * alpha;
+    history.avgImbalance = history.avgImbalance * (1.0f - alpha) + stats.imbalance * alpha;
+    history.avgOccupancy = history.avgOccupancy * (1.0f - alpha) + stats.occupancy * alpha;
+}
+
+AdaptiveMTConfig chooseAdaptiveConfig(const Renderer& renderer, const AdaptiveHistory& history) {
+    AdaptiveMTConfig config;
+    const int W = static_cast<int>(renderer.canvas.getWidth());
+    const int H = static_cast<int>(renderer.canvas.getHeight());
+
+    const int hw = std::max(1u, std::thread::hardware_concurrency());
+    const int maxThreads = std::min(static_cast<int>(hw), MT_MAX_THREADS);
+
+    if (!history.initialized) {
+        config.tileW = MT_TILE_W;
+        config.tileH = MT_TILE_H;
+        config.threadCount = std::min(THREAD_COUNT, maxThreads);
+        return config;
+    }
+
+    float scale = 1.0f;
+    if (history.avgVisible < 250.0f) {
+        scale = 2.0f;
+    }
+    else if (history.avgVisible < 600.0f) {
+        scale = 1.5f;
+    }
+
+    if (history.avgImbalance > 3.0f || history.avgOccupancy < 0.2f) {
+        scale = 0.33f;
+    }
+    else if (history.avgImbalance > 2.0f || history.avgOccupancy < 0.35f) {
+        scale = 0.5f;
+    }
+
+    const int minTileW = 128;
+    const int minTileH = 128;
+    config.tileW = std::clamp(static_cast<int>(std::round(MT_TILE_W * scale)), minTileW, W);
+    config.tileH = std::clamp(static_cast<int>(std::round(MT_TILE_H * scale)), minTileH, H);
+
+    int threads = maxThreads;
+    if (history.avgVisible < 300.0f) {
+        threads = 1;
+    }
+    else if (history.avgVisible < 1200.0f) {
+        threads = std::max(1, maxThreads / 2);
+    }
+
+    const int tilesX = (W + config.tileW - 1) / config.tileW;
+    const int tilesY = (H + config.tileH - 1) / config.tileH;
+    const int tileCount = tilesX * tilesY;
+    if (tileCount > 0) {
+        threads = std::min(threads, tileCount);
+    }
+    config.threadCount = std::clamp(threads, 1, maxThreads);
+    return config;
+}
+
+void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPool& pool, const AdaptiveMTConfig& config, WorkloadAccumulator* acc) {
 
 #if OPT_FRUSTUM_CULLING
     vec4 boundsCenter;
@@ -60,8 +222,12 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
         mesh->preProcessVertexCache(p, (float)W, (float)H, *vCache);
     }
 
-    const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
-    const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
+    if (acc) {
+        accumulateWorkload(renderer, *vCache, mesh->triangles, *acc);
+    }
+
+    const int tilesX = (W + config.tileW - 1) / config.tileW;
+    const int tilesY = (H + config.tileH - 1) / config.tileH;
 
     std::vector<ThreadPool::Job> batch;
     batch.reserve(tilesX * tilesY);
@@ -69,10 +235,10 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
     for (int ty = 0; ty < tilesY; ++ty) {
         for (int tx = 0; tx < tilesX; ++tx) {
             ScissorRect sc{
-                tx * MT_TILE_W,
-                ty * MT_TILE_H,
-                std::min((tx + 1) * MT_TILE_W, W),
-                std::min((ty + 1) * MT_TILE_H, H)
+                tx * config.tileW,
+                ty * config.tileH,
+                std::min((tx + 1) * config.tileW, W),
+                std::min((ty + 1) * config.tileH, H)
             };
 
             batch.emplace_back([&, sc, vCache, lp, mesh]() {
@@ -95,12 +261,9 @@ struct MeshRenderData {
     std::shared_ptr<avx2::LightSIMD> lp;
 };
 
-void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& camera, Light& L, ThreadPool& pool) {
+void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& camera, Light& L, ThreadPool& pool, const AdaptiveMTConfig& config, WorkloadAccumulator* acc) {
     const int W = static_cast<int>(renderer.canvas.getWidth());
     const int H = static_cast<int>(renderer.canvas.getHeight());
-
-    const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
-    const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
 
     auto renderData = std::make_shared<std::vector<MeshRenderData>>();
     renderData->reserve(scene.size());
@@ -130,8 +293,15 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
 
         mesh->preProcessVertexCache(p, static_cast<float>(W), static_cast<float>(H), *data.vCache);
 
+        if (acc) {
+            accumulateWorkload(renderer, *data.vCache, mesh->triangles, *acc);
+        }
+
         renderData->push_back(std::move(data));
     }
+
+    const int tilesX = (W + config.tileW - 1) / config.tileW;
+    const int tilesY = (H + config.tileH - 1) / config.tileH;
 
     std::vector<ThreadPool::Job> batch;
     batch.reserve(tilesX * tilesY);
@@ -139,10 +309,10 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
     for (int ty = 0; ty < tilesY; ++ty) {
         for (int tx = 0; tx < tilesX; ++tx) {
             ScissorRect sc{
-                tx * MT_TILE_W,
-                ty * MT_TILE_H,
-                std::min((tx + 1) * MT_TILE_W, W),
-                std::min((ty + 1) * MT_TILE_H, H)
+                tx * config.tileW,
+                ty * config.tileH,
+                std::min((tx + 1) * config.tileW, W),
+                std::min((ty + 1) * config.tileH, H)
             };
 
             batch.emplace_back([&, sc, renderData]() {
@@ -252,7 +422,9 @@ void sceneTest() {
     #endif
 
 #if OPT_MULTITHREAD
-    ThreadPool pool(THREAD_COUNT);
+    std::unique_ptr<ThreadPool> pool;
+    int activeThreads = 0;
+    AdaptiveHistory history;
 #endif
 
     // camera is just a matrix
@@ -292,12 +464,21 @@ void sceneTest() {
         if (renderer.canvas.keyPressed('Q')) z += 0.1f;
         if (renderer.canvas.keyPressed('E')) z += -0.1f;
 
+        AdaptiveMTConfig config = chooseAdaptiveConfig(renderer, history);
+        if (!pool || activeThreads != config.threadCount) {
+            pool = std::make_unique<ThreadPool>(config.threadCount);
+            activeThreads = config.threadCount;
+        }
+
+        WorkloadAccumulator acc = makeAccumulator(6, 4);
+
         // Render each object in the scene
 #if OPT_MULTITHREAD
         for (auto& m : scene) {
-            renderMT(renderer, m, camera, L, pool);
+            renderMT(renderer, m, camera, L, *pool, config, &acc);
         }
-        pool.waitIdle();
+        pool->waitIdle();
+        updateHistory(history, finalizeWorkload(acc));
 #else
         for (auto& m : scene) {
             render(renderer, m, camera, L);
@@ -334,7 +515,9 @@ void scene1() {
 #endif
 
 #if OPT_MULTITHREAD
-    ThreadPool pool(THREAD_COUNT);
+    std::unique_ptr<ThreadPool> pool;
+    int activeThreads = 0;
+    AdaptiveHistory history;
 #endif
 
     bool running = true;
@@ -385,14 +568,23 @@ void scene1() {
         }
 
 #if OPT_MULTITHREAD
+        AdaptiveMTConfig config = chooseAdaptiveConfig(renderer, history);
+        if (!pool || activeThreads != config.threadCount) {
+            pool = std::make_unique<ThreadPool>(config.threadCount);
+            activeThreads = config.threadCount;
+        }
+
+        WorkloadAccumulator acc = makeAccumulator(6, 4);
+
 #if OPT_RENDER_SCENE
-        renderSceneMT(renderer, scene, camera, L, pool);
+        renderSceneMT(renderer, scene, camera, L, *pool, config, &acc);
 #else
         for (auto& m : scene) {
-            renderMT(renderer, m, camera, L, pool);
+            renderMT(renderer, m, camera, L, *pool, config, &acc);
         }
 #endif
-        pool.waitIdle();
+        pool->waitIdle();
+        updateHistory(history, finalizeWorkload(acc));
 #else
         for (auto& m : scene) {
             render(renderer, m, camera, L);
@@ -406,7 +598,9 @@ void scene1() {
 
 	profiler.printReport("Scene 1");
 #if OPT_MULTITHREAD
-    pool.dumpStats();
+    if (pool) {
+        pool->dumpStats();
+    }
 #endif
 }
 
@@ -422,7 +616,9 @@ void scene2() {
 #endif
 
 #if OPT_MULTITHREAD
-    ThreadPool pool(THREAD_COUNT);
+    std::unique_ptr<ThreadPool> pool;
+    int activeThreads = 0;
+    AdaptiveHistory history;
 #endif
 
     std::vector<Mesh*> scene;
@@ -491,14 +687,23 @@ void scene2() {
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
 #if OPT_MULTITHREAD
+        AdaptiveMTConfig config = chooseAdaptiveConfig(renderer, history);
+        if (!pool || activeThreads != config.threadCount) {
+            pool = std::make_unique<ThreadPool>(config.threadCount);
+            activeThreads = config.threadCount;
+        }
+
+        WorkloadAccumulator acc = makeAccumulator(6, 4);
+
 #if OPT_RENDER_SCENE
-        renderSceneMT(renderer, scene, camera, L, pool);
+        renderSceneMT(renderer, scene, camera, L, *pool, config, &acc);
 #else
         for (auto& m : scene) {
-            renderMT(renderer, m, camera, L, pool);
+            renderMT(renderer, m, camera, L, *pool, config, &acc);
         }
 #endif
-        pool.waitIdle();
+        pool->waitIdle();
+        updateHistory(history, finalizeWorkload(acc));
 #else
         for (auto& m : scene) {
             render(renderer, m, camera, L);
@@ -512,7 +717,9 @@ void scene2() {
 
 	profiler.printReport("Scene 2");
 #if OPT_MULTITHREAD
-	pool.dumpStats();
+    if (pool) {
+	    pool->dumpStats();
+    }
 #endif
 }
 
@@ -526,7 +733,9 @@ void scene3() {
 #endif
 
 #if OPT_MULTITHREAD
-    ThreadPool pool(THREAD_COUNT);
+    std::unique_ptr<ThreadPool> pool;
+    int activeThreads = 0;
+    AdaptiveHistory history;
 #endif
 
     std::vector<Mesh*> scene;
@@ -616,14 +825,23 @@ void scene3() {
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
 #if OPT_MULTITHREAD
+        AdaptiveMTConfig config = chooseAdaptiveConfig(renderer, history);
+        if (!pool || activeThreads != config.threadCount) {
+            pool = std::make_unique<ThreadPool>(config.threadCount);
+            activeThreads = config.threadCount;
+        }
+
+        WorkloadAccumulator acc = makeAccumulator(6, 4);
+
         #if OPT_RENDER_SCENE
-        renderSceneMT(renderer, scene, camera, L, pool);
+        renderSceneMT(renderer, scene, camera, L, *pool, config, &acc);
         #else
         for (auto& m : scene) {
-            renderMT(renderer, m, camera, L, pool);
+            renderMT(renderer, m, camera, L, *pool, config, &acc);
         }
         #endif
-        pool.waitIdle();
+        pool->waitIdle();
+        updateHistory(history, finalizeWorkload(acc));
 #else
         for (auto& m : scene) {
             render(renderer, m, camera, L);
@@ -637,7 +855,9 @@ void scene3() {
 
     profiler.printReport("Scene 3");
 #if OPT_MULTITHREAD
-    pool.dumpStats();
+    if (pool) {
+        pool->dumpStats();
+    }
 #endif
 }
 
