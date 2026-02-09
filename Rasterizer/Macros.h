@@ -51,7 +51,7 @@
 #define MT_TILE_H 384
 #define THREAD_COUNT 8
 #define MT_MAX_THREADS				22
-#define TARGET_TOTAL_LOOPS			25000
-#define WARMUP_LOOPS				5000
+#define TARGET_TOTAL_LOOPS			13000
+#define WARMUP_LOOPS				3000
 
 #define SCENE_SELECT				3

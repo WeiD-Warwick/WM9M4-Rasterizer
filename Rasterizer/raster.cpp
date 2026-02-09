@@ -540,41 +540,95 @@ void scene3() {
 
     RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
 
-    auto addCube = [&](float x, float y, float z, float size) {
+    auto addCube = [&](float x, float y, float z) {
         Mesh* m = new Mesh();
-        *m = Mesh::makeCube(size);
+        *m = Mesh::makeCube(1.f);
         scene.push_back(m);
         m->world = matrix::makeTranslation(x, y, z);
         rRot r{ rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f) };
         rotatingMeshes.push_back({ m, r });
         };
 
-    // Dense cluster on the left to create heavy tiles (load imbalance in parallel rendering)
-    for (unsigned int y = 0; y < 40; y++) {
-        for (unsigned int x = 0; x < 65; x++) {
-            addCube(-120.0f + (static_cast<float>(x) * 2.0f), 45.0f - (static_cast<float>(y) * 2.0f), -35.f, 1.f);
-        }
+
+    // ---- 4 directional cube matrices (each: half in-screen, half off-screen) ----
+    auto addGrid = [&](float startX, float startY, float z, int nx, int ny, float step)
+        {
+            for (int iy = 0; iy < ny; ++iy) {
+                for (int ix = 0; ix < nx; ++ix) {
+                    float x = startX + ix * step;
+                    float y = startY - iy * step;
+                    addCube(x, y, z);
+                }
+            }
+        };
+
+    // Grid size (adjust if too heavy)
+    const int NX = 36;
+    const int NY = 16;
+    const float STEP = 2.2f;
+    const float Z0 = -35.f;
+    const float depth = -Z0; // Z0 is negative
+    const float tanHalf = std::tan(renderer.getFov() * 0.5f);
+    const float halfV = depth * tanHalf;
+    const float halfH = halfV * renderer.getAspect();
+
+    const float GAP = 20.f;
+
+    const float spanW_TB = 2.0f * (halfH - GAP);
+    int NX_TB = (int)std::floor(spanW_TB / STEP) + 1;
+    int NY_TB = NY;
+
+    const float spanH_LR = 2.0f * (halfV - GAP);
+    int NY_LR = (int)std::floor(spanH_LR / STEP) + 1;
+    int NX_LR = NX; 
+
+    NX_TB = std::max(2, NX_TB);
+    NY_LR = std::max(2, NY_LR);
+
+    // LEFT (vertical band)
+    {
+        float gridW = (NX_LR - 1) * STEP;
+        float gridH = (NY_LR - 1) * STEP;
+        float centerX = -halfH;
+        float centerY = 0.f;
+        float startX = centerX - gridW * 0.5f;
+        float startY = centerY + gridH * 0.5f;
+        addGrid(startX, startY, Z0, NX_LR, NY_LR, STEP);
     }
 
-    // Sparse cluster on the right to keep some tiles light
-    for (unsigned int y = 0; y < 10; y++) {
-        for (unsigned int x = 0; x < 20; x++) {
-            addCube(30.0f + (static_cast<float>(x) * 3.5f), 20.0f - (static_cast<float>(y) * 3.5f), -60.f, 1.5f);
-        }
+    // RIGHT (vertical band)
+    {
+        float gridW = (NX_LR - 1) * STEP;
+        float gridH = (NY_LR - 1) * STEP;
+        float centerX = +halfH;
+        float centerY = 0.f;
+        float startX = centerX - gridW * 0.5f;
+        float startY = centerY + gridH * 0.5f;
+        addGrid(startX, startY, Z0, NX_LR, NY_LR, STEP);
     }
 
-    // Offscreen cluster for frustum culling tests
-    for (unsigned int y = 0; y < 20; y++) {
-        for (unsigned int x = 0; x < 20; x++) {
-            addCube(210.0f + (static_cast<float>(x) * 3.f), 80.0f - (static_cast<float>(y) * 3.f), -45.f, 1.f);
-        }
+    // TOP (horizontal band)
+    {
+        float gridW = (NX_TB - 1) * STEP;
+        float gridH = (NY_TB - 1) * STEP;
+        float centerX = 0.f;
+        float centerY = +halfV;
+        float startX = centerX - gridW * 0.5f;
+        float startY = centerY + gridH * 0.5f;
+        addGrid(startX, startY, Z0, NX_TB, NY_TB, STEP);
     }
 
-    // Large occluder to increase overdraw and highlight early-z behavior
-    Mesh* occluder = new Mesh();
-    *occluder = Mesh::makeRectangle(-80.f, -45.f, 20.f, 45.f);
-    occluder->world = matrix::makeTranslation(-20.f, 0.f, -22.f);
-    scene.push_back(occluder);
+    // BOTTOM (horizontal band)
+    {
+        float gridW = (NX_TB - 1) * STEP;
+        float gridH = (NY_TB - 1) * STEP;
+        float centerX = 0.f;
+        float centerY = -halfV;
+        float startX = centerX - gridW * 0.5f;
+        float startY = centerY + gridH * 0.5f;
+        addGrid(startX, startY, Z0, NX_TB, NY_TB, STEP);
+    }
+
 
     // Create a sphere and add it to the scene
     Mesh* sphere = new Mesh();
@@ -645,8 +699,8 @@ void scene3() {
 // Entry point of the application
 // No input variables
 int main() {
-    scene1();
-    scene2();
+    //scene1();
+    //scene2();
     scene3();
 
     //if (SCENE_SELECT == 1) {
