@@ -19,7 +19,6 @@
 
 // ===== For Scene 3 =====
 #define OPT_RENDER_SCENE			1
-#define OPT_TRI_BIN					1
 #define OPT_FRUSTUM_CULLING			1
 
 // ===== Variable Definitions =====
@@ -52,12 +51,7 @@
 #define MT_TILE_H 384
 #define THREAD_COUNT 8
 #define MT_MAX_THREADS				22
-#define TARGET_TOTAL_LOOPS			32000
+#define TARGET_TOTAL_LOOPS			25000
 #define WARMUP_LOOPS				5000
 
 #define SCENE_SELECT				3
-
-// Scene 4
-// 22.37 FPS
-// 127.57 FPS
-// 260.42 FPS

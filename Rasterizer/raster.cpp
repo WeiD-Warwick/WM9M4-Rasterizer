@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <chrono>
 
-#include <cmath>
 #include "matrix.h"
 #include "colour.h"
 #include "mesh.h"
@@ -64,49 +63,6 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
     const int tilesX = (W + MT_TILE_W - 1) / MT_TILE_W;
     const int tilesY = (H + MT_TILE_H - 1) / MT_TILE_H;
 
-#if OPT_TRI_BIN
-    auto triangleBins = std::make_shared<std::vector<std::vector<int>>>(tilesX * tilesY);
-
-    for (int i = 0; i < static_cast<int>(mesh->triangles.size()); ++i) {
-        auto& ind = mesh->triangles[i];
-        if (std::fabs(vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(vCache->p.z[ind.v[2]]) > 1.0f) {
-            continue;
-        }
-
-        float x0 = vCache->p.x[ind.v[0]];
-        float y0 = vCache->p.y[ind.v[0]];
-        float x1 = vCache->p.x[ind.v[1]];
-        float y1 = vCache->p.y[ind.v[1]];
-        float x2 = vCache->p.x[ind.v[2]];
-        float y2 = vCache->p.y[ind.v[2]];
-
-        int triMinX = static_cast<int>(std::floor(std::min({ x0, x1, x2 })));
-        int triMaxX = static_cast<int>(std::ceil(std::max({ x0, x1, x2 })));
-        int triMinY = static_cast<int>(std::floor(std::min({ y0, y1, y2 })));
-        int triMaxY = static_cast<int>(std::ceil(std::max({ y0, y1, y2 })));
-
-        int minX = std::max(0, triMinX);
-        int minY = std::max(0, triMinY);
-        int maxX = std::min(W, triMaxX);
-        int maxY = std::min(H, triMaxY);
-
-        if (minX >= maxX || minY >= maxY) {
-            continue;
-        }
-
-        int tileMinX = minX / MT_TILE_W;
-        int tileMaxX = (maxX - 1) / MT_TILE_W;
-        int tileMinY = minY / MT_TILE_H;
-        int tileMaxY = (maxY - 1) / MT_TILE_H;
-
-        for (int ty = tileMinY; ty <= tileMaxY; ++ty) {
-            for (int tx = tileMinX; tx <= tileMaxX; ++tx) {
-                (*triangleBins)[ty * tilesX + tx].push_back(i);
-            }
-        }
-    }
-#endif
-
     std::vector<ThreadPool::Job> batch;
     batch.reserve(tilesX * tilesY);
 
@@ -119,19 +75,11 @@ void renderMT(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, ThreadPo
                 std::min((ty + 1) * MT_TILE_H, H)
             };
 
-#if OPT_TRI_BIN
-            int tileIndex = ty * tilesX + tx;
-            batch.emplace_back([&, sc, vCache, lp, mesh, triangleBins, tileIndex]() {
-                const auto& bin = (*triangleBins)[tileIndex];
-                for (int triIndex : bin) {
-                    auto& ind = mesh->triangles[triIndex];
-#else
             batch.emplace_back([&, sc, vCache, lp, mesh]() {
                 for (auto& ind : mesh->triangles) {
                     if (std::fabs(vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(vCache->p.z[ind.v[2]]) > 1.0f) {
                         continue;
                     }
-#endif
                     triangle::drawMT(renderer, *vCache, ind, *lp, sc);
                 }
             });
@@ -145,9 +93,6 @@ struct MeshRenderData {
     Mesh* mesh = nullptr;
     std::shared_ptr<VertexSOA> vCache;
     std::shared_ptr<avx2::LightSIMD> lp;
-#if OPT_TRI_BIN
-    std::shared_ptr<std::vector<std::vector<int>>> triangleBins;
-#endif
 };
 
 void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& camera, Light& L, ThreadPool& pool) {
@@ -185,49 +130,6 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
 
         mesh->preProcessVertexCache(p, static_cast<float>(W), static_cast<float>(H), *data.vCache);
 
-#if OPT_TRI_BIN
-        data.triangleBins = std::make_shared<std::vector<std::vector<int>>>(tilesX * tilesY);
-
-        for (int i = 0; i < static_cast<int>(mesh->triangles.size()); ++i) {
-            auto& ind = mesh->triangles[i];
-            if (std::fabs(data.vCache->p.z[ind.v[0]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[1]]) > 1.0f || std::fabs(data.vCache->p.z[ind.v[2]]) > 1.0f) {
-                continue;
-            }
-
-            float x0 = data.vCache->p.x[ind.v[0]];
-            float y0 = data.vCache->p.y[ind.v[0]];
-            float x1 = data.vCache->p.x[ind.v[1]];
-            float y1 = data.vCache->p.y[ind.v[1]];
-            float x2 = data.vCache->p.x[ind.v[2]];
-            float y2 = data.vCache->p.y[ind.v[2]];
-
-            int triMinX = static_cast<int>(std::floor(std::min({ x0, x1, x2 })));
-            int triMaxX = static_cast<int>(std::ceil(std::max({ x0, x1, x2 })));
-            int triMinY = static_cast<int>(std::floor(std::min({ y0, y1, y2 })));
-            int triMaxY = static_cast<int>(std::ceil(std::max({ y0, y1, y2 })));
-
-            int minX = std::max(0, triMinX);
-            int minY = std::max(0, triMinY);
-            int maxX = std::min(W, triMaxX);
-            int maxY = std::min(H, triMaxY);
-
-            if (minX >= maxX || minY >= maxY) {
-                continue;
-            }
-
-            int tileMinX = minX / MT_TILE_W;
-            int tileMaxX = (maxX - 1) / MT_TILE_W;
-            int tileMinY = minY / MT_TILE_H;
-            int tileMaxY = (maxY - 1) / MT_TILE_H;
-
-            for (int ty = tileMinY; ty <= tileMaxY; ++ty) {
-                for (int tx = tileMinX; tx <= tileMaxX; ++tx) {
-                    (*data.triangleBins)[ty * tilesX + tx].push_back(i);
-                }
-            }
-        }
-#endif
-
         renderData->push_back(std::move(data));
     }
 
@@ -243,18 +145,6 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
                 std::min((ty + 1) * MT_TILE_H, H)
             };
 
-#if OPT_TRI_BIN
-            int tileIndex = ty * tilesX + tx;
-            batch.emplace_back([&, sc, renderData, tileIndex]() {
-                for (const auto& data : *renderData) {
-                    const auto& bin = (*data.triangleBins)[tileIndex];
-                    for (int triIndex : bin) {
-                        auto& ind = data.mesh->triangles[triIndex];
-                        triangle::drawMT(renderer, *data.vCache, ind, *data.lp, sc);
-                    }
-                }
-                });
-#else
             batch.emplace_back([&, sc, renderData]() {
                 for (const auto& data : *renderData) {
                     for (auto& ind : data.mesh->triangles) {
@@ -265,7 +155,6 @@ void renderSceneMT(Renderer& renderer, const std::vector<Mesh*>& scene, matrix& 
                     }
                 }
                 });
-#endif
         }
     }
 
@@ -756,19 +645,22 @@ void scene3() {
 // Entry point of the application
 // No input variables
 int main() {
+    scene1();
+    scene2();
+    scene3();
 
-    if (SCENE_SELECT == 1) {
-        scene1();
-    }
-    else if (SCENE_SELECT == 2) {
-        scene2();
-    }
-    else if (SCENE_SELECT == 3) {
-        scene3();
-    }
-    else {
-        sceneTest();
-    }
+    //if (SCENE_SELECT == 1) {
+    //    scene1();
+    //}
+    //else if (SCENE_SELECT == 2) {
+    //    scene2();
+    //}
+    //else if (SCENE_SELECT == 3) {
+    //    scene3();
+    //}
+    //else {
+    //    sceneTest();
+    //}
 
     return 0;
 }
